@@ -2,13 +2,13 @@
 
 > Neural image synthesizer — text-to-image and animation powered by CLIP + VQGAN/Limited Palette
 
-**v1.0.0-beta**
-
 PyTTI Portable is a self-contained, one-click distributable of [pytti-core](https://github.com/pytti-tools/pytti-core) with a Gradio web UI. No Python install required — everything is bootstrapped from a single `install.bat`.
 
+[![Release](https://img.shields.io/github/v/release/pxl-pshr/pytti?include_prereleases&label=version)](https://github.com/pxl-pshr/pytti/releases/latest)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![CUDA](https://img.shields.io/badge/CUDA-11.7-green)
 ![Python](https://img.shields.io/badge/python-3.10-yellow)
+[![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 
 ## Features
 
