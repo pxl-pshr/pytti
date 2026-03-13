@@ -71,4 +71,4 @@ PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward te
 
 ## License
 
-See [pytti-core](https://github.com/pytti-tools/pytti-core) for license details.
+MIT — see [LICENSE](LICENSE) for details.
