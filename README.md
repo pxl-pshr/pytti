@@ -1,0 +1,74 @@
+# PyTTI Portable
+
+> Neural image synthesizer — text-to-image and animation powered by CLIP + VQGAN/Limited Palette
+
+**v1.0.0-beta**
+
+PyTTI Portable is a self-contained, one-click distributable of [pytti-core](https://github.com/pytti-tools/pytti-core) with a Gradio web UI. No Python install required — everything is bootstrapped from a single `install.bat`.
+
+![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![CUDA](https://img.shields.io/badge/CUDA-11.7-green)
+![Python](https://img.shields.io/badge/python-3.10-yellow)
+
+## Features
+
+- **Gradio web UI** with live preview, config save/load, and render controls
+- **3D animation** with camera transforms (translate, rotate, zoom) and depth estimation
+- **Multiple image models**: Limited Palette, VQGAN (multiple checkpoints)
+- **CLIP-guided rendering** with multi-model ensemble (ViT-B/32, ViT-B/16, RN50x4, etc.)
+- **Video Source mode** for style transfer onto existing video
+- **Audioreactive** animation support
+- **Config system** powered by Hydra — save, load, and share render presets as YAML files
+
+## Requirements
+
+- Windows 10 or 11
+- NVIDIA GPU (GTX 10xx through RTX 40xx)
+  - RTX 50xx (Blackwell) is **not supported**
+- Up-to-date NVIDIA drivers
+- [Git](https://git-scm.com) installed and on PATH
+- ~8 GB disk space (after install)
+
+## Quick Start
+
+1. Clone or download this repo
+2. Double-click **`install.bat`** (one-time, ~30-60 min)
+3. Double-click **`launch.bat`**
+4. A browser window opens — start rendering
+
+The first render will download CLIP and depth models (~1-4 GB), cached after that.
+
+## Project Structure
+
+```
+pytti-portable/
+├── install.bat          # One-time installer (downloads Python, PyTorch, deps)
+├── launch.bat           # Starts the Gradio UI
+├── app/
+│   ├── ui.py            # Gradio web UI
+│   └── config/
+│       ├── default.yaml # Default render settings
+│       └── conf/        # User-saved presets
+```
+
+## How It Works
+
+PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward text prompts. In animation mode, each frame is warped via 2D/3D transforms with MiDaS depth estimation, then re-optimized toward the prompt — producing dreamlike, evolving visuals.
+
+## Resources
+
+- [pytti-book](https://pytti-tools.github.io/pytti-book/intro.html) — documentation, tutorials, and parameter guide
+- [pytti-notebook](https://github.com/pytti-tools/pytti-notebook) — the original Colab notebook this project is based on
+
+## Credits
+
+- [pytti-core](https://github.com/pytti-tools/pytti-core) — the rendering engine
+- [CLIP](https://github.com/openai/CLIP) — OpenAI's vision-language model
+- [taming-transformers](https://github.com/CompVis/taming-transformers) — VQGAN
+- [AdaBins](https://github.com/shariqfarooq123/AdaBins) — monocular depth estimation
+- [GMA](https://github.com/zacjiang/GMA) — optical flow for video mode
+- [Gradio](https://gradio.app) — web UI framework
+
+## License
+
+See [pytti-core](https://github.com/pytti-tools/pytti-core) for license details.
