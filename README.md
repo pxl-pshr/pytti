@@ -62,6 +62,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward te
 
 ## Credits
 
+- [David Marx](https://github.com/dmarx) & [sportsracer48](https://github.com/sportsracer48) — original pytti creators and maintainers
 - [pytti-core](https://github.com/pytti-tools/pytti-core) — the rendering engine
 - [CLIP](https://github.com/openai/CLIP) — OpenAI's vision-language model
 - [taming-transformers](https://github.com/CompVis/taming-transformers) — VQGAN
