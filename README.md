@@ -10,6 +10,13 @@ PyTTI Portable is a self-contained, one-click distributable of [pytti-core](http
 ![Python](https://img.shields.io/badge/python-3.10-yellow)
 [![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 
+<p align="center">
+  <img src="examples/example-01.png" width="24%" />
+  <img src="examples/example-02.png" width="24%" />
+  <img src="examples/example-05.png" width="24%" />
+  <img src="examples/example-09.png" width="24%" />
+</p>
+
 ## Features
 
 - **Gradio web UI** with live preview, config save/load, and render controls
