@@ -326,6 +326,31 @@ _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
 _TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
 _SCENE_RE = re.compile(r"(?:scene|Scene)\s+(\d+)", re.IGNORECASE)
 
+def _append_summary(label: str):
+    """Append render summary to log."""
+    elapsed = time.time() - _render_start if _render_start else 0
+    conf = _render_conf or {}
+    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("|") if s.strip()]))
+    steps_per_scene = conf.get("steps_per_scene", 0)
+    total_steps = conf.get("pre_animation_steps", 0) + (num_scenes * steps_per_scene)
+    done = (_render_scene * steps_per_scene) + _render_step
+    save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
+    frames = done // save_every if save_every > 0 else 0
+    avg_sps = done / elapsed if elapsed > 0 else 0
+    avg_spf = elapsed / frames if frames > 0 else 0
+    _log_lines.append("=" * 50)
+    _log_lines.append(label)
+    _log_lines.append("-" * 50)
+    _log_lines.append(f"  Steps:         {done} / {total_steps}")
+    _log_lines.append(f"  Frames saved:  {frames}")
+    _log_lines.append(f"  Total time:    {_format_eta(elapsed)}")
+    if avg_sps > 0:
+        _log_lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
+    if frames > 0:
+        _log_lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
+    _log_lines.append("=" * 50)
+
+
 def _stream_output(proc):
     global _running, _render_its, _render_step, _render_step_total, _render_scene
     for line in iter(proc.stdout.readline, ""):
@@ -349,33 +374,11 @@ def _stream_output(proc):
             _render_scene = int(sm.group(1))
         _log_lines.append(clean)
     proc.wait()
-    # Render summary
-    elapsed = time.time() - _render_start if _render_start else 0
-    conf = _render_conf or {}
-    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("|") if s.strip()]))
-    steps_per_scene = conf.get("steps_per_scene", 0)
-    total_steps = conf.get("pre_animation_steps", 0) + (num_scenes * steps_per_scene)
-    done = (_render_scene * steps_per_scene) + _render_step
-    save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
-    frames = done // save_every if save_every > 0 else 0
-    avg_sps = done / elapsed if elapsed > 0 else 0
-    avg_spf = elapsed / frames if frames > 0 else 0
-    _log_lines.append("=" * 50)
-    if proc.returncode == 0:
-        _log_lines.append("RENDER COMPLETE")
-    else:
-        _log_lines.append(f"RENDER ENDED (exit code {proc.returncode})")
-    _log_lines.append("-" * 50)
-    _log_lines.append(f"  Steps:         {done} / {total_steps}")
-    _log_lines.append(f"  Frames saved:  {frames}")
-    _log_lines.append(f"  Total time:    {_format_eta(elapsed)}")
-    if avg_sps > 0:
-        _log_lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
-    if frames > 0:
-        _log_lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
-    if _stop_requested:
-        _log_lines.append("  (stopped early by user)")
-    _log_lines.append("=" * 50)
+    if not _stop_requested:
+        if proc.returncode == 0:
+            _append_summary("RENDER COMPLETE")
+        else:
+            _append_summary(f"RENDER ENDED (exit code {proc.returncode})")
     _running = False
     _render_its = 0.0
 
@@ -444,13 +447,14 @@ def stop_render():
     global _proc, _running, _stop_requested
     if _proc and _running:
         _stop_requested = True
+        _append_summary("RENDER STOPPED")
+        _running = False
         _proc.terminate()
         try:
             _proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             _proc.kill()
-        # _stream_output thread will append summary and set _running = False
-        return "Render stopping…"
+        return "Render stopped."
     return "No render running."
 
 
