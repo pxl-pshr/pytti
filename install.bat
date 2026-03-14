@@ -124,7 +124,9 @@ if errorlevel 1 goto :error
 call :ok
 
 :: ---------------------------------------------------------------------------
-call :step 6 6 "Finalizing"
+call :step 6 6 "Applying patches"
+python\python.exe app\patch_gradio.py
+if errorlevel 1 goto :error
 call :ok
 
 :: ---------------------------------------------------------------------------
