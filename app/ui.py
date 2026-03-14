@@ -445,7 +445,11 @@ def stop_render():
     if _proc and _running:
         _stop_requested = True
         _proc.terminate()
-        _running = False
+        try:
+            _proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _proc.kill()
+        # _stream_output thread will append summary and set _running = False
         return "Render stopping…"
     return "No render running."
 
