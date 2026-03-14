@@ -64,6 +64,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward te
 
 ## Resources
 
+- [Demo video](https://www.youtube.com/watch?v=W3oDPhUV0Pc) — pytti in action
 - [pytti-book](https://pytti-tools.github.io/pytti-book/intro.html) — documentation, tutorials, and parameter guide
 - [pytti-notebook](https://github.com/pytti-tools/pytti-notebook) — the original Colab notebook this project is based on
 
