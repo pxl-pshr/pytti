@@ -12,8 +12,8 @@ PyTTI Portable is a self-contained, one-click distributable of [pytti-core](http
 
 <p align="center">
   <img src="examples/example-01.png" width="24%" />
-  <img src="examples/example-02.png" width="24%" />
-  <img src="examples/example-05.png" width="24%" />
+  <img src="examples/example-07.png" width="24%" />
+  <img src="examples/example-11.png" width="24%" />
   <img src="examples/example-09.png" width="24%" />
 </p>
 
