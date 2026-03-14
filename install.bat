@@ -86,39 +86,39 @@ echo %DIM%       PyTorch alone is ~4GB - please be patient.%R%
 echo.
 
 echo %DIM%       [+] setuptools%R%
-python\python.exe -m pip install "setuptools<70"
+python\python.exe -m pip install --no-warn-script-location "setuptools<70"
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] numpy%R%
-python\python.exe -m pip install numpy==1.23.5
+python\python.exe -m pip install --no-warn-script-location numpy==1.23.5
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] PyTorch + CUDA 11.7%R%
-python\python.exe -m pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu117
+python\python.exe -m pip install --no-warn-script-location torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu117
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] dependencies%R%
-python\python.exe -m pip install ipython scipy requests gradio==4.44.1 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorflow==2.10.0
+python\python.exe -m pip install --no-warn-script-location ipython scipy requests gradio==4.44.1 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorflow==2.10.0
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] AdaBins%R%
-python\python.exe -m pip install git+https://github.com/pytti-tools/AdaBins.git
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/AdaBins.git
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] GMA%R%
-python\python.exe -m pip install git+https://github.com/pytti-tools/GMA.git
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/GMA.git
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] taming-transformers%R%
-python\python.exe -m pip install git+https://github.com/pytti-tools/taming-transformers.git
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/taming-transformers.git
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] CLIP%R%
-python\python.exe -m pip install git+https://github.com/openai/CLIP.git
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/openai/CLIP.git
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] pytti-core%R%
-python\python.exe -m pip install git+https://github.com/pytti-tools/pytti-core.git
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/pytti-core.git
 if errorlevel 1 goto :error
 
 call :ok
