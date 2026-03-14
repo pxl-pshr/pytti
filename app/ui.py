@@ -311,6 +311,7 @@ def merged_config(conf_name: str) -> dict:
 # ---------------------------------------------------------------------------
 _proc: subprocess.Popen | None = None
 _log_lines: list[str] = []
+_log_lock = threading.Lock()
 _running = False
 _render_its: float = 0.0          # latest observed it/s from tqdm
 _render_step: int = 0             # current step within tqdm bar
@@ -319,6 +320,7 @@ _render_scene: int = 0            # which scene we're on (0-indexed)
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
 _stop_requested: bool = False
+_summary_appended: bool = False
 
 
 _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
@@ -327,28 +329,36 @@ _TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
 _SCENE_RE = re.compile(r"(?:scene|Scene)\s+(\d+)", re.IGNORECASE)
 
 def _append_summary(label: str):
-    """Append render summary to log."""
+    """Append render summary to log. Only runs once per render."""
+    global _summary_appended
+    if _summary_appended:
+        return
+    _summary_appended = True
     elapsed = time.time() - _render_start if _render_start else 0
     conf = _render_conf or {}
-    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("|") if s.strip()]))
-    steps_per_scene = conf.get("steps_per_scene", 0)
+    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
+    steps_per_scene = conf.get("steps_per_scene", 10000)
     total_steps = conf.get("pre_animation_steps", 0) + (num_scenes * steps_per_scene)
     done = (_render_scene * steps_per_scene) + _render_step
     save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
     frames = done // save_every if save_every > 0 else 0
     avg_sps = done / elapsed if elapsed > 0 else 0
     avg_spf = elapsed / frames if frames > 0 else 0
-    _log_lines.append("=" * 50)
-    _log_lines.append(label)
-    _log_lines.append("-" * 50)
-    _log_lines.append(f"  Steps:         {done} / {total_steps}")
-    _log_lines.append(f"  Frames saved:  {frames}")
-    _log_lines.append(f"  Total time:    {_format_eta(elapsed)}")
+    lines = [
+        "=" * 50,
+        label,
+        "-" * 50,
+        f"  Steps:         {done} / {total_steps}",
+        f"  Frames saved:  {frames}",
+        f"  Total time:    {_format_eta(elapsed)}",
+    ]
     if avg_sps > 0:
-        _log_lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
+        lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
     if frames > 0:
-        _log_lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
-    _log_lines.append("=" * 50)
+        lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
+    lines.append("=" * 50)
+    with _log_lock:
+        _log_lines.extend(lines)
 
 
 def _stream_output(proc):
@@ -372,7 +382,8 @@ def _stream_output(proc):
         sm = _SCENE_RE.search(clean)
         if sm:
             _render_scene = int(sm.group(1))
-        _log_lines.append(clean)
+        with _log_lock:
+            _log_lines.append(clean)
     proc.wait()
     if not _stop_requested:
         if proc.returncode == 0:
@@ -399,7 +410,7 @@ def _get_eta() -> str:
     if not _running or _render_its <= 0:
         return ""
     conf = _render_conf or {}
-    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("|") if s.strip()]))
+    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
     steps_per_scene = conf.get("steps_per_scene", 10000)
     pre_steps = conf.get("pre_animation_steps", 0)
     total_steps = pre_steps + (num_scenes * steps_per_scene)
@@ -413,12 +424,14 @@ def _get_eta() -> str:
 
 
 def start_render(conf_name: str):
-    global _proc, _log_lines, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start, _stop_requested
+    global _proc, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start, _stop_requested, _summary_appended
     if _running:
         return "Already running."
-    _log_lines = []
+    with _log_lock:
+        _log_lines.clear()
     _running = True
     _stop_requested = False
+    _summary_appended = False
     _render_its = 0.0
     _render_step = 0
     _render_step_total = 0
@@ -459,7 +472,8 @@ def stop_render():
 
 
 def get_log():
-    return "\n".join(_log_lines[-200:])
+    with _log_lock:
+        return "\n".join(_log_lines[-200:])
 
 
 def get_latest_frame(namespace: str):
@@ -499,17 +513,18 @@ def build_conf_dict(
     steps_per_scene, steps_per_frame, interpolation_steps, pre_animation_steps,
     translate_x, translate_y, translate_z_3d, rotate_2d, rotate_3d,
     zoom_x_2d, zoom_y_2d, lock_camera,
-    cutouts, cut_pow, learning_rate, seed,
+    cutouts, cut_pow, cutout_border, learning_rate, seed, reset_lr_each_frame,
     border_mode, sampling_mode, infill_mode,
-    ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16,
-    palette_size, palettes, gamma, hdr_weight, palette_normalization_weight,
+    ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16, RN50x64,
+    palette_size, palettes, pixel_size, gamma, hdr_weight, palette_normalization_weight,
     random_initial_palette, lock_palette, target_palette,
-    frames_per_second, save_every, display_every, file_namespace, allow_overwrite,
+    frames_per_second, save_every, display_every, file_namespace, allow_overwrite, backups,
     field_of_view, near_plane, far_plane,
-    gradient_accumulation_steps,
+    gradient_accumulation_steps, smoothing_weight,
     direct_stabilization_weight, semantic_stabilization_weight,
     depth_stabilization_weight, edge_stabilization_weight, flow_stabilization_weight,
-    input_audio, flow_long_term_samples,
+    reencode_each_frame,
+    input_audio, input_audio_offset, flow_long_term_samples,
 ):
     return {
         "scenes": " ".join(scenes.split()),
@@ -540,8 +555,10 @@ def build_conf_dict(
         "lock_camera": lock_camera,
         "cutouts": int(cutouts),
         "cut_pow": float(cut_pow),
+        "cutout_border": float(cutout_border),
         "learning_rate": float(learning_rate) if learning_rate else None,
         "seed": int(seed) if str(seed).strip().isdigit() else random.randint(0, 2**32 - 1),
+        "reset_lr_each_frame": reset_lr_each_frame,
         "border_mode": border_mode,
         "sampling_mode": sampling_mode,
         "infill_mode": infill_mode,
@@ -553,6 +570,8 @@ def build_conf_dict(
         "RN101": RN101,
         "RN50x4": RN50x4,
         "RN50x16": RN50x16,
+        "RN50x64": RN50x64,
+        "pixel_size": int(pixel_size),
         "palette_size": int(palette_size),
         "palettes": int(palettes),
         "gamma": float(gamma),
@@ -566,16 +585,20 @@ def build_conf_dict(
         "display_every": int(display_every),
         "file_namespace": file_namespace,
         "allow_overwrite": allow_overwrite,
+        "backups": int(backups),
         "field_of_view": int(field_of_view),
         "near_plane": int(near_plane),
         "far_plane": int(far_plane),
         "gradient_accumulation_steps": int(gradient_accumulation_steps),
+        "smoothing_weight": float(smoothing_weight),
         "direct_stabilization_weight": direct_stabilization_weight,
         "semantic_stabilization_weight": semantic_stabilization_weight,
         "depth_stabilization_weight": depth_stabilization_weight,
         "edge_stabilization_weight": edge_stabilization_weight,
         "flow_stabilization_weight": flow_stabilization_weight,
+        "reencode_each_frame": reencode_each_frame,
         "input_audio": input_audio.strip().strip("\"'()"),
+        "input_audio_offset": float(input_audio_offset),
         "flow_long_term_samples": int(flow_long_term_samples),
     }
 
@@ -829,10 +852,14 @@ def make_ui():
                 with gr.Row():
                     cutouts = gr.Number(label="Cutouts", value=cfg.get("cutouts", 50), precision=0, info=TIPS["cutouts"])
                     cut_pow = gr.Number(label="Cut Power", value=cfg.get("cut_pow", 2.1), info=TIPS["cut_pow"])
+                    cutout_border = gr.Number(label="Cutout Border", value=cfg.get("cutout_border", 0.25), info="Border width for cutouts. Controls how much padding is added around each cutout.")
                 with gr.Row():
                     learning_rate = gr.Textbox(label="Learning Rate (blank = auto)", value=str(cfg.get("learning_rate", "") or ""), info=TIPS["learning_rate"])
                     seed = gr.Textbox(label="Seed (blank = random)", value=str(cfg.get("seed", "")), info=TIPS["seed"])
-                gradient_accumulation_steps = gr.Number(label="Gradient Accumulation Steps", value=cfg.get("gradient_accumulation_steps", 2), precision=0, info=TIPS["gradient_accumulation_steps"])
+                    reset_lr_each_frame = gr.Checkbox(label="Reset LR Each Frame", value=cfg.get("reset_lr_each_frame", True), info="Reset the learning rate at the start of each frame.")
+                with gr.Row():
+                    gradient_accumulation_steps = gr.Number(label="Gradient Accumulation Steps", value=cfg.get("gradient_accumulation_steps", 2), precision=0, info=TIPS["gradient_accumulation_steps"])
+                    smoothing_weight = gr.Number(label="Smoothing Weight", value=cfg.get("smoothing_weight", 0.02), info="Total variation loss weight — higher values produce smoother images, lower values preserve more detail.")
 
                 gr.Markdown("### CLIP Models")
                 with gr.Row():
@@ -845,6 +872,7 @@ def make_ui():
                     RN101 = gr.Checkbox(label="RN101", value=cfg.get("RN101", False))
                     RN50x4 = gr.Checkbox(label="RN50x4", value=cfg.get("RN50x4", True))
                     RN50x16 = gr.Checkbox(label="RN50x16", value=cfg.get("RN50x16", False))
+                    RN50x64 = gr.Checkbox(label="RN50x64", value=cfg.get("RN50x64", False))
 
             # ----------------------------------------------------------------
             # TAB: Palette
@@ -853,6 +881,7 @@ def make_ui():
                 with gr.Row():
                     palette_size = gr.Number(label="Palette Size", value=cfg.get("palette_size", 50), precision=0, info=TIPS["palette_size"])
                     palettes = gr.Number(label="Palettes", value=cfg.get("palettes", 18), precision=0, info=TIPS["palettes"])
+                    pixel_size = gr.Number(label="Pixel Size", value=cfg.get("pixel_size", 4), precision=0, info="Size of each pixel block in Limited Palette mode. Higher = more pixelated.")
                 with gr.Row():
                     gamma = gr.Number(label="Gamma", value=cfg.get("gamma", 1.5), info=TIPS["gamma"])
                     hdr_weight = gr.Number(label="HDR Weight", value=cfg.get("hdr_weight", 0.35), info=TIPS["hdr_weight"])
@@ -874,7 +903,9 @@ def make_ui():
                     edge_stabilization_weight = gr.Textbox(label="Edge Stabilization Weight", value=str(cfg.get("edge_stabilization_weight", "")), info=TIPS["edge_stabilization_weight"])
                     flow_stabilization_weight = gr.Textbox(label="Flow Stabilization Weight", value=str(cfg.get("flow_stabilization_weight", "")), info=TIPS["flow_stabilization_weight"])
                 flow_long_term_samples = gr.Number(label="Flow Long-term Samples", value=cfg.get("flow_long_term_samples", 1), precision=0, info=TIPS["flow_long_term_samples"])
+                reencode_each_frame = gr.Checkbox(label="Re-encode Each Frame", value=cfg.get("reencode_each_frame", True), info="Re-encode video frames through the image model each step. Disable for faster but lower quality video mode.")
                 input_audio = gr.Textbox(label="Input Audio Path", value=cfg.get("input_audio", ""), info=TIPS["input_audio"])
+                input_audio_offset = gr.Number(label="Audio Offset (seconds)", value=cfg.get("input_audio_offset", 0), info="Offset in seconds to sync audio with the animation.")
 
             # ----------------------------------------------------------------
             # TAB: Output
@@ -886,7 +917,9 @@ def make_ui():
                 with gr.Row():
                     save_every = gr.Number(label="Save Every N Steps", value=cfg.get("save_every", 50), precision=0, info=TIPS["save_every"])
                     display_every = gr.Number(label="Display Every N Steps", value=cfg.get("display_every", 50), precision=0, info=TIPS["display_every"])
-                allow_overwrite = gr.Checkbox(label="Allow Overwrite", value=cfg.get("allow_overwrite", True), info=TIPS["allow_overwrite"])
+                with gr.Row():
+                    allow_overwrite = gr.Checkbox(label="Allow Overwrite", value=cfg.get("allow_overwrite", True), info=TIPS["allow_overwrite"])
+                    backups = gr.Number(label="Backups", value=cfg.get("backups", 0), precision=0, info="Number of backup copies to keep for each frame. 0 = no backups.")
 
             # ----------------------------------------------------------------
             # TAB: Run
@@ -945,17 +978,18 @@ def make_ui():
             steps_per_scene, steps_per_frame, interpolation_steps, pre_animation_steps,
             translate_x, translate_y, translate_z_3d, rotate_2d, rotate_3d,
             zoom_x_2d, zoom_y_2d, lock_camera,
-            cutouts, cut_pow, learning_rate, seed,
+            cutouts, cut_pow, cutout_border, learning_rate, seed, reset_lr_each_frame,
             border_mode, sampling_mode, infill_mode,
-            ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16,
-            palette_size, palettes, gamma, hdr_weight, palette_normalization_weight,
+            ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16, RN50x64,
+            palette_size, palettes, pixel_size, gamma, hdr_weight, palette_normalization_weight,
             random_initial_palette, lock_palette, target_palette,
-            frames_per_second, save_every, display_every, file_namespace, allow_overwrite,
+            frames_per_second, save_every, display_every, file_namespace, allow_overwrite, backups,
             field_of_view, near_plane, far_plane,
-            gradient_accumulation_steps,
+            gradient_accumulation_steps, smoothing_weight,
             direct_stabilization_weight, semantic_stabilization_weight,
             depth_stabilization_weight, edge_stabilization_weight, flow_stabilization_weight,
-            input_audio, flow_long_term_samples,
+            reencode_each_frame,
+            input_audio, input_audio_offset, flow_long_term_samples,
         ]
 
         # ----------------------------------------------------------------
@@ -1005,7 +1039,7 @@ def make_ui():
                 str(data.get("direct_init_weight", "") or ""),
                 str(data.get("semantic_init_weight", "") or ""),
                 data.get("image_model", "Limited Palette"),
-                data.get("vqgan_model", "coco"),
+                data.get("vqgan_model", "sflickr"),
                 data.get("animation_mode", "3D"),
                 data.get("video_path", ""),
                 data.get("frame_stride", 1),
@@ -1025,8 +1059,10 @@ def make_ui():
                 data.get("lock_camera", True),
                 data.get("cutouts", 50),
                 data.get("cut_pow", 2.1),
+                data.get("cutout_border", 0.25),
                 str(data.get("learning_rate", "") or ""),
                 str(data.get("seed", "")),
+                data.get("reset_lr_each_frame", True),
                 data.get("border_mode", "wrap"),
                 data.get("sampling_mode", "bicubic"),
                 data.get("infill_mode", "wrap"),
@@ -1038,8 +1074,10 @@ def make_ui():
                 data.get("RN101", False),
                 data.get("RN50x4", True),
                 data.get("RN50x16", False),
+                data.get("RN50x64", False),
                 data.get("palette_size", 50),
                 data.get("palettes", 18),
+                data.get("pixel_size", 4),
                 data.get("gamma", 1.5),
                 data.get("hdr_weight", 0.35),
                 data.get("palette_normalization_weight", 0.75),
@@ -1051,16 +1089,20 @@ def make_ui():
                 data.get("display_every", 50),
                 data.get("file_namespace", "default"),
                 data.get("allow_overwrite", True),
+                data.get("backups", 0),
                 data.get("field_of_view", 60),
                 data.get("near_plane", 2000),
                 data.get("far_plane", 12500),
                 data.get("gradient_accumulation_steps", 2),
+                data.get("smoothing_weight", 0.02),
                 str(data.get("direct_stabilization_weight", "1")),
                 str(data.get("semantic_stabilization_weight", "") or ""),
                 str(data.get("depth_stabilization_weight", "") or ""),
                 str(data.get("edge_stabilization_weight", "") or ""),
                 str(data.get("flow_stabilization_weight", "") or ""),
+                data.get("reencode_each_frame", True),
                 data.get("input_audio", ""),
+                data.get("input_audio_offset", 0),
                 data.get("flow_long_term_samples", 1),
                 conf_display,
             ]
@@ -1072,13 +1114,14 @@ def make_ui():
             msg = run_render(conf_name)
             return save_result[0], msg, gr.Timer(active=True)
 
-        def stop_and_deactivate_timer():
+        def stop_and_deactivate_timer(namespace):
             msg = stop_render()
-            return msg, gr.Timer(active=False)
+            log, frame = refresh(namespace)
+            return msg, gr.Timer(active=False), log, frame
 
         save_btn.click(fn=save_config, inputs=[conf_name_input] + all_inputs, outputs=[load_conf_dropdown, status_box])
         run_btn.click(fn=run_and_activate_timer, inputs=[conf_name_input] + all_inputs, outputs=[load_conf_dropdown, status_box, timer])
-        stop_btn.click(fn=stop_and_deactivate_timer, outputs=[status_box, timer])
+        stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace], outputs=[status_box, timer, log_box, frame_preview])
         refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
         timer.tick(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
         load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input])
