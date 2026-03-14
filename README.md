@@ -23,7 +23,7 @@ PyTTI Portable is a self-contained, one-click distributable of [pytti-core](http
 - **3D animation** with camera transforms (translate, rotate, zoom) and depth estimation
 - **Multiple image models**: Limited Palette, VQGAN (multiple checkpoints)
 - **CLIP-guided rendering** with multi-model ensemble (ViT-B/32, ViT-B/16, RN50x4, etc.)
-- **Video Source mode** for style transfer onto existing video
+- **[Video Source mode](https://www.youtube.com/watch?v=W3oDPhUV0Pc)** for style transfer onto existing video
 - **Audioreactive** animation support
 - **Config system** powered by Hydra — save, load, and share render presets as YAML files
 
