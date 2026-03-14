@@ -82,7 +82,7 @@ call :ok
 call :step 5 6 "Installing packages"
 echo.
 echo %DIM%       This will take 20-60 minutes.%R%
-echo %DIM%       PyTorch alone is ~4GB — please be patient.%R%
+echo %DIM%       PyTorch alone is ~4GB - please be patient.%R%
 echo.
 
 echo %DIM%       [+] setuptools%R%
