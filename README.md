@@ -4,7 +4,6 @@
 
 PyTTI Portable is a self-contained, one-click distributable of [pytti-core](https://github.com/pytti-tools/pytti-core) with a Gradio web UI. No Python install required — everything is bootstrapped from a single `install.bat`.
 
-[![Release](https://img.shields.io/github/v/release/pxl-pshr/pytti?include_prereleases&label=version)](https://github.com/pxl-pshr/pytti/releases/latest)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![CUDA](https://img.shields.io/badge/CUDA-11.7-green)
 ![Python](https://img.shields.io/badge/python-3.10-yellow)
@@ -38,10 +37,16 @@ PyTTI Portable is a self-contained, one-click distributable of [pytti-core](http
 
 ## Quick Start
 
-1. Clone or download this repo
-2. Double-click **`install.bat`** (one-time, ~30-60 min)
-3. Double-click **`launch.bat`**
-4. A browser window opens — start rendering
+```
+git clone https://github.com/pxl-pshr/pytti.git
+cd pytti
+```
+
+1. Double-click **`install.bat`** (one-time, ~30-60 min)
+2. Double-click **`launch.bat`**
+3. A browser window opens — start rendering
+
+To update: `git pull` from the pytti folder.
 
 The first render will download CLIP and depth models (~1-4 GB), cached after that.
 
