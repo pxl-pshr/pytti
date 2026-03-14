@@ -318,6 +318,7 @@ _render_step_total: int = 0       # total steps in current tqdm bar
 _render_scene: int = 0            # which scene we're on (0-indexed)
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
+_stop_requested: bool = False
 
 
 _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
@@ -372,6 +373,8 @@ def _stream_output(proc):
         _log_lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
     if frames > 0:
         _log_lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
+    if _stop_requested:
+        _log_lines.append("  (stopped early by user)")
     _log_lines.append("=" * 50)
     _running = False
     _render_its = 0.0
@@ -407,11 +410,12 @@ def _get_eta() -> str:
 
 
 def start_render(conf_name: str):
-    global _proc, _log_lines, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start
+    global _proc, _log_lines, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start, _stop_requested
     if _running:
         return "Already running."
     _log_lines = []
     _running = True
+    _stop_requested = False
     _render_its = 0.0
     _render_step = 0
     _render_step_total = 0
@@ -437,11 +441,12 @@ def start_render(conf_name: str):
 
 
 def stop_render():
-    global _proc, _running
+    global _proc, _running, _stop_requested
     if _proc and _running:
+        _stop_requested = True
         _proc.terminate()
         _running = False
-        return "Render stopped."
+        return "Render stopping…"
     return "No render running."
 
 
