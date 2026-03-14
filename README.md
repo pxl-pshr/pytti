@@ -48,14 +48,16 @@ The first render will download CLIP and depth models (~1-4 GB), cached after tha
 ## Project Structure
 
 ```
-pytti-portable/
+pytti/
 ├── install.bat          # One-time installer (downloads Python, PyTorch, deps)
 ├── launch.bat           # Starts the Gradio UI
 ├── app/
 │   ├── ui.py            # Gradio web UI
+│   ├── patch_gradio.py  # Post-install dependency patches
 │   └── config/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
+└── examples/            # Sample renders
 ```
 
 ## How It Works

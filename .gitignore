@@ -1,17 +1,14 @@
 # Embedded Python runtime (~6GB)
-dist/python/
+python/
 
 # Outputs and render artifacts
-dist/app/outputs/
-dist/app/images_out/
-dist/app/backup/
+app/outputs/
+app/images_out/
+app/backup/
 
 # User configs (keep defaults and templates only)
-dist/app/config/conf/*.yaml
-!dist/app/config/conf/_empty.yaml
-
-# Build artifacts
-dist/config/
+app/config/conf/*.yaml
+!app/config/conf/_empty.yaml
 
 # Python
 __pycache__/
