@@ -9,6 +9,7 @@ import random
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -316,6 +317,7 @@ _render_step: int = 0             # current step within tqdm bar
 _render_step_total: int = 0       # total steps in current tqdm bar
 _render_scene: int = 0            # which scene we're on (0-indexed)
 _render_conf: dict | None = None  # config snapshot for ETA calc
+_render_start: float = 0.0       # time.time() when render started
 
 
 _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
@@ -346,9 +348,33 @@ def _stream_output(proc):
             _render_scene = int(sm.group(1))
         _log_lines.append(clean)
     proc.wait()
+    # Render summary
+    elapsed = time.time() - _render_start if _render_start else 0
+    conf = _render_conf or {}
+    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("|") if s.strip()]))
+    steps_per_scene = conf.get("steps_per_scene", 0)
+    total_steps = conf.get("pre_animation_steps", 0) + (num_scenes * steps_per_scene)
+    done = (_render_scene * steps_per_scene) + _render_step
+    save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
+    frames = done // save_every if save_every > 0 else 0
+    avg_sps = done / elapsed if elapsed > 0 else 0
+    avg_spf = elapsed / frames if frames > 0 else 0
+    _log_lines.append("=" * 50)
+    if proc.returncode == 0:
+        _log_lines.append("RENDER COMPLETE")
+    else:
+        _log_lines.append(f"RENDER ENDED (exit code {proc.returncode})")
+    _log_lines.append("-" * 50)
+    _log_lines.append(f"  Steps:         {done} / {total_steps}")
+    _log_lines.append(f"  Frames saved:  {frames}")
+    _log_lines.append(f"  Total time:    {_format_eta(elapsed)}")
+    if avg_sps > 0:
+        _log_lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
+    if frames > 0:
+        _log_lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
+    _log_lines.append("=" * 50)
     _running = False
     _render_its = 0.0
-    _log_lines.append(f"--- process exited with code {proc.returncode} ---")
 
 
 def _format_eta(seconds: float) -> str:
@@ -381,7 +407,7 @@ def _get_eta() -> str:
 
 
 def start_render(conf_name: str):
-    global _proc, _log_lines, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf
+    global _proc, _log_lines, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start
     if _running:
         return "Already running."
     _log_lines = []
@@ -390,6 +416,7 @@ def start_render(conf_name: str):
     _render_step = 0
     _render_step_total = 0
     _render_scene = 0
+    _render_start = time.time()
     # Snapshot config for ETA calculations
     name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
     _render_conf = load_conf(name) if (CONF_DIR / name).exists() else {}
