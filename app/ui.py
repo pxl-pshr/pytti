@@ -98,7 +98,7 @@ TIPS = {
     "input_audio": "Path to an audio file for audioreactive animation.",
     "file_namespace": "Name of the output subfolder inside images_out/. Change this for each new run.",
     "frames_per_second": "Playback FPS when assembling the final video.",
-    "save_every": "Save a frame image every N optimization steps.",
+    "save_every": "Save a frame image every N optimization steps. Set to the same as Steps per Frame.",
     "display_every": "Update the live preview every N optimization steps.",
     "allow_overwrite": "If disabled, existing output files are kept and new ones are numbered.",
 }
@@ -492,6 +492,18 @@ def get_latest_frame(namespace: str):
 # Save config helper
 # ---------------------------------------------------------------------------
 
+def _num(value, default):
+    """Safely convert a value to a number, returning default for Hydra resolver strings like ${...}."""
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _clean_prompt_field(text, leading_pipe=False, trailing_pipe=False):
     """Collapse whitespace and ensure proper | delimiters."""
     cleaned = " ".join(text.split())
@@ -737,6 +749,9 @@ p, .prose p { color: #5fa8be !important; }
 /* === LOG / MONO OUTPUTS === */
 #log-box textarea { color: #39ff14 !important; background: #020a10 !important; font-size: 0.75rem !important; }
 
+/* === COMPACT BUTTONS === */
+.btn-sm { max-height: 42px !important; min-height: 42px !important; padding: 0 12px !important; align-self: flex-end !important; }
+
 /* === SCROLLBARS === */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: #030c12; }
@@ -925,17 +940,15 @@ def make_ui():
             # TAB: Run
             # ----------------------------------------------------------------
             with gr.Tab("Run"):
-                gr.Markdown("### Save & Run")
+                with gr.Row(equal_height=True):
+                    conf_name_input = gr.Textbox(label="Config Name", placeholder="my_run", scale=2)
+                    load_conf_dropdown = gr.Dropdown(label="Load Config", choices=get_conf_files(), scale=2)
+                    refresh_configs_btn = gr.Button("↻", variant="secondary", scale=0, min_width=36, elem_classes=["btn-sm"])
+                    load_btn = gr.Button("Load", variant="secondary", scale=0, min_width=70, elem_classes=["btn-sm"])
+                    save_btn = gr.Button("Save", variant="secondary", scale=0, min_width=70, elem_classes=["btn-sm"])
                 with gr.Row():
-                    conf_name_input = gr.Textbox(label="Config Name", placeholder="my_run", scale=3)
-                    load_conf_dropdown = gr.Dropdown(label="Load Existing Config", choices=get_conf_files(), scale=2)
-                    load_btn = gr.Button("Load", variant="secondary", scale=0, min_width=80)
-
-                with gr.Row():
-                    save_btn = gr.Button("Save Config", variant="secondary")
-                    run_btn = gr.Button("Start Render", variant="primary")
-                    stop_btn = gr.Button("Stop Render", variant="stop")
-
+                    run_btn = gr.Button("Start Render", variant="primary", scale=2)
+                    stop_btn = gr.Button("Stop Render", variant="stop", scale=1)
                 status_box = gr.Textbox(label="Status", interactive=False, lines=1)
 
                 gr.Markdown("### Live Log")
@@ -1042,13 +1055,13 @@ def make_ui():
                 data.get("vqgan_model", "sflickr"),
                 data.get("animation_mode", "3D"),
                 data.get("video_path", ""),
-                data.get("frame_stride", 1),
-                data.get("width", 512),
-                data.get("height", 512),
-                data.get("steps_per_scene", 10000),
-                data.get("steps_per_frame", 80),
-                data.get("interpolation_steps", 250),
-                data.get("pre_animation_steps", 50),
+                _num(data.get("frame_stride", 1), 1),
+                _num(data.get("width", 512), 512),
+                _num(data.get("height", 512), 512),
+                _num(data.get("steps_per_scene", 10000), 10000),
+                _num(data.get("steps_per_frame", 80), 80),
+                _num(data.get("interpolation_steps", 250), 250),
+                _num(data.get("pre_animation_steps", 50), 50),
                 str(data.get("translate_x", "0")),
                 str(data.get("translate_y", "0")),
                 str(data.get("translate_z_3d", "0")),
@@ -1057,9 +1070,9 @@ def make_ui():
                 str(data.get("zoom_x_2d", "0")),
                 str(data.get("zoom_y_2d", "0")),
                 data.get("lock_camera", True),
-                data.get("cutouts", 50),
-                data.get("cut_pow", 2.1),
-                data.get("cutout_border", 0.25),
+                _num(data.get("cutouts", 50), 50),
+                _num(data.get("cut_pow", 2.1), 2.1),
+                _num(data.get("cutout_border", 0.25), 0.25),
                 str(data.get("learning_rate", "") or ""),
                 str(data.get("seed", "")),
                 data.get("reset_lr_each_frame", True),
@@ -1075,26 +1088,26 @@ def make_ui():
                 data.get("RN50x4", True),
                 data.get("RN50x16", False),
                 data.get("RN50x64", False),
-                data.get("palette_size", 50),
-                data.get("palettes", 18),
-                data.get("pixel_size", 4),
-                data.get("gamma", 1.5),
-                data.get("hdr_weight", 0.35),
-                data.get("palette_normalization_weight", 0.75),
+                _num(data.get("palette_size", 50), 50),
+                _num(data.get("palettes", 18), 18),
+                _num(data.get("pixel_size", 4), 4),
+                _num(data.get("gamma", 1.5), 1.5),
+                _num(data.get("hdr_weight", 0.35), 0.35),
+                _num(data.get("palette_normalization_weight", 0.75), 0.75),
                 data.get("random_initial_palette", False),
                 data.get("lock_palette", False),
                 data.get("target_palette", ""),
-                data.get("frames_per_second", 15),
-                data.get("save_every", 50),
-                data.get("display_every", 50),
+                _num(data.get("frames_per_second", 15), 15),
+                _num(data.get("save_every", 50), 50),
+                _num(data.get("display_every", 50), 50),
                 data.get("file_namespace", "default"),
                 data.get("allow_overwrite", True),
-                data.get("backups", 0),
-                data.get("field_of_view", 60),
-                data.get("near_plane", 2000),
-                data.get("far_plane", 12500),
-                data.get("gradient_accumulation_steps", 2),
-                data.get("smoothing_weight", 0.02),
+                _num(data.get("backups", 0), 0),
+                _num(data.get("field_of_view", 60), 60),
+                _num(data.get("near_plane", 2000), 2000),
+                _num(data.get("far_plane", 12500), 12500),
+                _num(data.get("gradient_accumulation_steps", 2), 2),
+                _num(data.get("smoothing_weight", 0.02), 0.02),
                 str(data.get("direct_stabilization_weight", "1")),
                 str(data.get("semantic_stabilization_weight", "") or ""),
                 str(data.get("depth_stabilization_weight", "") or ""),
@@ -1102,8 +1115,8 @@ def make_ui():
                 str(data.get("flow_stabilization_weight", "") or ""),
                 data.get("reencode_each_frame", True),
                 data.get("input_audio", ""),
-                data.get("input_audio_offset", 0),
-                data.get("flow_long_term_samples", 1),
+                _num(data.get("input_audio_offset", 0), 0),
+                _num(data.get("flow_long_term_samples", 1), 1),
                 conf_display,
             ]
 
@@ -1125,6 +1138,7 @@ def make_ui():
         refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
         timer.tick(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
         load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input])
+        refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
 
     return demo
 
