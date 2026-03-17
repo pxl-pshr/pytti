@@ -67,7 +67,7 @@ pytti/
 
 ## How It Works
 
-PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward text prompts. In animation mode, each frame is warped via 2D/3D transforms with MiDaS depth estimation, then re-optimized toward the prompt — producing dreamlike, evolving visuals.
+PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward text prompts. In animation mode, each frame is warped via 2D/3D transforms with AdaBins depth estimation, then re-optimized toward the prompt — producing dreamlike, evolving visuals.
 
 ## Resources
 
@@ -82,7 +82,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward te
 - [pytti-core](https://github.com/pytti-tools/pytti-core) — the rendering engine
 - [CLIP](https://github.com/openai/CLIP) — OpenAI's vision-language model
 - [taming-transformers](https://github.com/CompVis/taming-transformers) — VQGAN
-- [AdaBins](https://github.com/shariqfarooq123/AdaBins) — monocular depth estimation
+- [AdaBins](https://github.com/shariqfarooq123/AdaBins) — monocular depth estimation (3D mode)
 - [GMA](https://github.com/zacjiang/GMA) — optical flow for video mode
 - [Gradio](https://gradio.app) — web UI framework
 

@@ -272,13 +272,13 @@ if not PYTHON_EXE.exists():
 # ---------------------------------------------------------------------------
 
 def load_yaml(path: Path) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def save_yaml(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
 
@@ -821,7 +821,7 @@ def make_ui():
                 # — Model & Mode —
                 with gr.Row():
                     image_model    = gr.Dropdown(label="Image Model",    choices=["Limited Palette", "Unlimited Palette", "VQGAN"],        value=cfg.get("image_model", "Limited Palette"), info=TIPS["image_model"],    scale=2)
-                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=["sflickr", "imagenet", "coco", "wikiart", "openimages"], value=cfg.get("vqgan_model", "sflickr"),          info=TIPS["vqgan_model"],    scale=2)
+                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=["sflickr", "imagenet", "coco", "wikiart", "openimages", "faceshq"], value=cfg.get("vqgan_model", "coco"),          info=TIPS["vqgan_model"],    scale=2)
                     animation_mode = gr.Dropdown(label="Animation Mode", choices=["off", "Video Source", "2D", "3D"],                      value=cfg.get("animation_mode", "3D"),           info=TIPS["animation_mode"], scale=1)
 
                 # — Dimensions & Video —
@@ -1018,7 +1018,7 @@ def make_ui():
             data = build_conf_dict(*values)
             path = CONF_DIR / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("# @package _global_\n")
                 yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
             return gr.Dropdown(choices=get_conf_files()), f"Saved to config/conf/{name}"
@@ -1052,7 +1052,7 @@ def make_ui():
                 str(data.get("direct_init_weight", "") or ""),
                 str(data.get("semantic_init_weight", "") or ""),
                 data.get("image_model", "Limited Palette"),
-                data.get("vqgan_model", "sflickr"),
+                data.get("vqgan_model", "coco"),
                 data.get("animation_mode", "3D"),
                 data.get("video_path", ""),
                 _num(data.get("frame_stride", 1), 1),
