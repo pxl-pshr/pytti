@@ -316,7 +316,8 @@ _running = False
 _render_its: float = 0.0          # latest observed it/s from tqdm
 _render_step: int = 0             # current step within tqdm bar
 _render_step_total: int = 0       # total steps in current tqdm bar
-_render_scene: int = 0            # which scene we're on (0-indexed)
+_render_scene: int = 0            # completed scenes count
+_scene_prompt_count: int = 0     # how many "Running prompt:" lines we've seen
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
 _stop_requested: bool = False
@@ -326,7 +327,7 @@ _summary_appended: bool = False
 _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
 # Match tqdm output like "  5%|▌         | 500/10000 [00:33<10:30, 15.08it/s]"
 _TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
-_SCENE_RE = re.compile(r"(?:scene|Scene)\s+(\d+)", re.IGNORECASE)
+_SCENE_RE = re.compile(r"Running prompt:", re.IGNORECASE)
 
 def _append_summary(label: str):
     """Append render summary to log. Only runs once per render."""
@@ -338,7 +339,7 @@ def _append_summary(label: str):
     conf = _render_conf or {}
     num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
     steps_per_scene = conf.get("steps_per_scene", 10000)
-    total_steps = conf.get("pre_animation_steps", 0) + (num_scenes * steps_per_scene)
+    total_steps = num_scenes * steps_per_scene
     done = (_render_scene * steps_per_scene) + _render_step
     save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
     frames = done // save_every if save_every > 0 else 0
@@ -362,7 +363,7 @@ def _append_summary(label: str):
 
 
 def _stream_output(proc):
-    global _running, _render_its, _render_step, _render_step_total, _render_scene
+    global _running, _render_its, _render_step, _render_step_total, _render_scene, _scene_prompt_count
     for line in iter(proc.stdout.readline, ""):
         # tqdm uses \r to overwrite; keep only the last segment
         parts = line.split("\r")
@@ -378,10 +379,11 @@ def _stream_output(proc):
             rate = float(m.group(3))
             # tqdm may report "s/it" (slow) or "it/s" (fast)
             _render_its = (1.0 / rate) if "s/it" in clean else rate
-        # Track scene transitions
-        sm = _SCENE_RE.search(clean)
-        if sm:
-            _render_scene = int(sm.group(1))
+        # Track scene transitions (pytti logs "Running prompt:" for each scene)
+        if _SCENE_RE.search(clean):
+            _scene_prompt_count += 1
+            # First "Running prompt:" is scene 0 starting; subsequent ones mean prior scene completed
+            _render_scene = max(0, _scene_prompt_count - 1)
         with _log_lock:
             _log_lines.append(clean)
     proc.wait()
@@ -412,8 +414,7 @@ def _get_eta() -> str:
     conf = _render_conf or {}
     num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
     steps_per_scene = conf.get("steps_per_scene", 10000)
-    pre_steps = conf.get("pre_animation_steps", 0)
-    total_steps = pre_steps + (num_scenes * steps_per_scene)
+    total_steps = num_scenes * steps_per_scene
     # Steps completed so far: completed scenes + current bar progress
     done = (_render_scene * steps_per_scene) + _render_step
     remaining = max(0, total_steps - done)
@@ -424,7 +425,7 @@ def _get_eta() -> str:
 
 
 def start_render(conf_name: str):
-    global _proc, _running, _render_its, _render_step, _render_step_total, _render_scene, _render_conf, _render_start, _stop_requested, _summary_appended
+    global _proc, _running, _render_its, _render_step, _render_step_total, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended
     if _running:
         return "Already running."
     with _log_lock:
@@ -436,6 +437,7 @@ def start_render(conf_name: str):
     _render_step = 0
     _render_step_total = 0
     _render_scene = 0
+    _scene_prompt_count = 0
     _render_start = time.time()
     # Snapshot config for ETA calculations
     name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
