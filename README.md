@@ -16,6 +16,10 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
   <img src="examples/example-09.png" width="24%" />
 </p>
 
+<p align="center">
+  <img src="examples/ui.png" width="80%" />
+</p>
+
 ## Features
 
 - **Gradio web UI** with live preview, config save/load, and render controls
