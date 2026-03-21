@@ -98,7 +98,7 @@ TIPS = {
     "input_audio": "Path to an audio file for audioreactive animation.",
     "file_namespace": "Name of the output subfolder inside images_out/. Change this for each new run.",
     "frames_per_second": "Playback FPS when assembling the final video.",
-    "save_every": "Save a frame image every N optimization steps. Set to the same as Steps per Frame.",
+    "save_every": "Save a frame every N steps. 0 = auto-match steps_per_frame (recommended). Set manually to override.",
     "display_every": "Update the live preview every N optimization steps.",
     "allow_overwrite": "If disabled, existing output files are kept and new ones are numbered.",
 }
@@ -152,7 +152,10 @@ HELP_SECTIONS = [
     ("CLIP & Optimization", [
         ("cutouts", "Number of random crops (glimpses) per CLIP evaluation. More cutouts = richer gradients and better quality, but slower and less VRAM-efficient. 40–60 is typical.", "number"),
         ("cut_pow", "Controls cutout size distribution. Default: <code>1</code>. Higher (2–3) = more small crops emphasizing fine detail but can be unstable. Lower = more large crops emphasizing global composition.", "number"),
+        ("cutout_border", "Fraction of each cutout devoted to border padding. Default: <code>0.25</code>. Higher = more context around each crop, which can improve coherence but reduces the effective crop area. <code>0</code> = no padding.", "number"),
         ("learning_rate", "Optimizer step size. Leave blank for auto-tuning. Lower (0.05–0.1) = more stable but slower. Higher (0.2–0.5) = faster but can overshoot.", "number"),
+        ("reset_lr_each_frame", "Reset the optimizer at each animation frame boundary. Default: <code>true</code>. Clears Adam momentum buffers so each frame optimizes fresh. Disable to carry optimizer state across frames — can reduce color shifts but may cause instability.", "bool"),
+        ("smoothing_weight", "Total variation loss weight — penalizes sharp pixel-to-pixel differences. Higher = smoother, more painterly images. Lower = more detail and texture but potentially noisy. Default varies by image model.", "number"),
         ("seed", "Pseudorandom seed for reproducibility. A fixed seed increases determinism — same seed + same config = similar output. Leave blank for a random seed each run.", "number"),
         ("gradient_accumulation_steps", "Batch cutout processing over N mini-steps before updating. Must divide <code>cutouts</code> evenly. Higher = smoother optimization and less VRAM per step, but slower overall. Default: <code>1</code>.", "number"),
         ("ViTB32", "Enable the ViT-B/32 CLIP model. Fast, good at composition. Recommended as a baseline. Each CLIP model requires significant VRAM.", "bool"),
@@ -163,6 +166,7 @@ HELP_SECTIONS = [
         ("RN101", "Enable the ResNet-101 CLIP model. Similar to RN50 but slightly better quality.", "bool"),
         ("RN50x4", "Enable the ResNet-50x4 CLIP model. Good balance of quality and speed. Complements ViT models well.", "bool"),
         ("RN50x16", "Enable the ResNet-50x16 CLIP model. High quality but heavy on VRAM.", "bool"),
+        ("RN50x64", "Enable the ResNet-50x64 CLIP model. Highest quality ResNet variant. Extremely heavy on VRAM — only use with plenty of GPU memory.", "bool"),
     ]),
     ("Limited Palette", [
         ("palette_size", "Number of colors per palette swatch. Total colors = <code>palette_size × palettes</code>. Lower (3–6) = more stylized/posterized. Higher (20–50) = smoother gradients.", "number"),
@@ -173,6 +177,7 @@ HELP_SECTIONS = [
         ("random_initial_palette", "Start with random colors instead of grayscale. Without this, palettes start grayscale and develop color during optimization. Good for abstract work.", "bool"),
         ("lock_palette", "Freeze the palette so colors don't change during the render. Most useful when restoring from a backup — otherwise tends to produce grayscale output.", "bool"),
         ("target_palette", "Path to an image whose colors the palette will be pulled toward. The model extracts a color scheme from this image and uses it as a target.", "path"),
+        ("pixel_size", "Size of each pixel block in the output. <code>1</code> = full resolution. Higher values (2, 4, 8) create a chunky pixel-art look with larger 'pixels'. Affects all image models but most noticeable with Limited Palette.", "number"),
     ]),
     ("Stabilization", [
         ("direct_stabilization_weight", "Keeps the current frame as a direct (pixel-level) image prompt for the next frame. Higher = less flicker but more ghosting. <code>1</code> is a good default. Supports <code>weight_mask</code> syntax.", "weight"),
@@ -181,16 +186,19 @@ HELP_SECTIONS = [
         ("edge_stabilization_weight", "Preserves image contours/edges between frames. Reduces shimmer on hard edges. Low performance cost. Supports masks.", "weight"),
         ("flow_stabilization_weight", "Optical flow alignment — warps each frame to match previous motion. Prevents flickering in 3D and Video Source modes. High cost for 3D, slight cost for Video Source.", "weight"),
         ("flow_long_term_samples", "Number of past frames sampled for flow stabilization. The earliest sampled frame is <code>2^N</code> frames in the past. Higher = more temporal coherence but slower. Default: <code>0</code>.", "number"),
+        ("reencode_each_frame", "Re-encode video source frames through the image model each step (Video Source mode). Enabled = higher quality but slower. Disabled = faster, uses raw video frames directly.", "bool"),
     ]),
     ("Audio (Experimental)", [
         ("input_audio", "Path to a WAV/MP3 file for audioreactive animation. Audio features are extracted and can modulate camera and style parameters via bandpass filters defined in the config.", "path"),
+        ("input_audio_offset", "Offset in seconds into the audio file. Use to sync audio features with a specific point in the animation. Default: <code>0</code>.", "number"),
     ]),
     ("Output", [
         ("file_namespace", "Subfolder name inside <code>images_out/</code>. Use a unique name per run to keep outputs organized. All frames for a run go in this folder.", "string"),
         ("frames_per_second", "Playback FPS for the final video — also controls how <code>t</code> is scaled in motion expressions. 12–15 for dreamy, 24–30 for smooth.", "number"),
-        ("save_every", "Save a PNG frame every N optimization steps. For consistent animation, set this equal to <code>steps_per_frame</code>.", "number"),
+        ("save_every", "Save a PNG frame every N optimization steps. <strong>0 = auto-match steps_per_frame</strong> (recommended). Set a value manually to override.", "number"),
         ("display_every", "Update the live preview every N steps. Lower = more frequent updates but slightly slower.", "number"),
         ("allow_overwrite", "If enabled, existing frames are overwritten on re-run. If disabled, new frames get incremented filenames to avoid data loss.", "bool"),
+        ("backups", "Number of rolling <code>.bak</code> backup files to keep per run. These store image model weights. <code>0</code> = no backups. <code>3</code> is a good default — keeps the last 3 frames' state.", "number"),
     ]),
 ]
 
@@ -341,7 +349,9 @@ def _append_summary(label: str):
     steps_per_scene = conf.get("steps_per_scene", 10000)
     total_steps = num_scenes * steps_per_scene
     done = (_render_scene * steps_per_scene) + _render_step
-    save_every = conf.get("save_every", conf.get("steps_per_frame", 50))
+    save_every = conf.get("save_every", 0) or conf.get("steps_per_frame", 50)
+    if save_every <= 0:
+        save_every = conf.get("steps_per_frame", 50)
     frames = done // save_every if save_every > 0 else 0
     avg_sps = done / elapsed if elapsed > 0 else 0
     avg_spf = elapsed / frames if frames > 0 else 0
@@ -456,6 +466,92 @@ def start_render(conf_name: str):
     t = threading.Thread(target=_stream_output, args=(_proc,), daemon=True)
     t.start()
     return "Render started."
+
+
+def get_encodable_runs():
+    """Scan outputs/ for runs that have PNG frames."""
+    runs = []
+    if not OUTPUTS_DIR.exists():
+        return runs
+    for day_dir in sorted(OUTPUTS_DIR.iterdir(), reverse=True):
+        if not day_dir.is_dir():
+            continue
+        for time_dir in sorted(day_dir.iterdir(), reverse=True):
+            if not time_dir.is_dir():
+                continue
+            images_out = time_dir / "images_out"
+            if not images_out.exists():
+                continue
+            for ns_dir in sorted(images_out.iterdir()):
+                if not ns_dir.is_dir():
+                    continue
+                pngs = list(ns_dir.glob("*.png"))
+                if pngs:
+                    label = f"{day_dir.name}/{time_dir.name} ({ns_dir.name}) — {len(pngs)} frames"
+                    runs.append((label, str(ns_dir)))
+    return runs
+
+
+def encode_video(frames_dir: str, fps: int, fmt: str):
+    """Encode a PNG frame sequence to video using ffmpeg."""
+    if not frames_dir:
+        return "Select a run first."
+    frames_path = Path(frames_dir)
+    if not frames_path.exists():
+        return f"Directory not found: {frames_dir}"
+
+    # Find the frame pattern and count
+    pngs = sorted(frames_path.glob("*.png"))
+    if not pngs:
+        return "No PNG frames found."
+
+    # Detect naming pattern from first file (e.g. default_1.png)
+    first = pngs[0].name
+    # Extract prefix: everything before the last _N.png
+    m = re.match(r"^(.+_)\d+\.png$", first)
+    if not m:
+        return f"Cannot parse frame naming pattern from: {first}"
+    prefix = m.group(1)
+    pattern = str(frames_path / f"{prefix}%d.png")
+
+    # Find start number
+    numbers = []
+    for p in pngs:
+        nm = re.search(r"_(\d+)\.png$", p.name)
+        if nm:
+            numbers.append(int(nm.group(1)))
+    start_num = min(numbers) if numbers else 1
+
+    # Output path
+    run_dir = frames_path.parent.parent  # up from images_out/namespace/
+    if fmt == "ProRes 4444 (MOV)":
+        ext = ".mov"
+        codec_args = ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le"]
+    elif fmt == "ProRes HQ (MOV)":
+        ext = ".mov"
+        codec_args = ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]
+    else:  # MP4
+        ext = ".mp4"
+        codec_args = ["-c:v", "libx264", "-crf", "17", "-preset", "slow", "-pix_fmt", "yuv420p"]
+
+    out_file = run_dir / f"{frames_path.name}_{fps}fps{ext}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-start_number", str(start_num),
+        "-i", pattern,
+    ] + codec_args + [str(out_file)]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            return f"ffmpeg error:\n{result.stderr[-500:]}"
+        return f"Encoded {len(pngs)} frames → {out_file.name}\nSaved to: {out_file}"
+    except FileNotFoundError:
+        return "ffmpeg not found. Install ffmpeg and ensure it's on your PATH."
+    except subprocess.TimeoutExpired:
+        return "Encoding timed out (>10 minutes)."
 
 
 def stop_render():
@@ -932,11 +1028,33 @@ def make_ui():
                     file_namespace = gr.Textbox(label="File Namespace", value=cfg.get("file_namespace", "default"), info=TIPS["file_namespace"])
                     frames_per_second = gr.Number(label="FPS", value=cfg.get("frames_per_second", 15), precision=0, info=TIPS["frames_per_second"])
                 with gr.Row():
-                    save_every = gr.Number(label="Save Every N Steps", value=cfg.get("save_every", 50), precision=0, info=TIPS["save_every"])
+                    save_every = gr.Number(label="Save Every N Steps", value=cfg.get("save_every", 0), precision=0, info=TIPS["save_every"])
                     display_every = gr.Number(label="Display Every N Steps", value=cfg.get("display_every", 50), precision=0, info=TIPS["display_every"])
                 with gr.Row():
                     allow_overwrite = gr.Checkbox(label="Allow Overwrite", value=cfg.get("allow_overwrite", True), info=TIPS["allow_overwrite"])
                     backups = gr.Number(label="Backups", value=cfg.get("backups", 0), precision=0, info="Number of backup copies to keep for each frame. 0 = no backups.")
+
+                gr.Markdown("### Encode Video")
+                with gr.Row(equal_height=True):
+                    encode_run_dropdown = gr.Dropdown(
+                        label="Run",
+                        choices=[],
+                        scale=2,
+                        info="Select a run with saved frames.",
+                    )
+                    encode_refresh_btn = gr.Button("↻", variant="secondary", scale=0, min_width=36, elem_classes=["btn-sm"])
+                with gr.Row():
+                    encode_fps = gr.Number(label="FPS", value=30, precision=0, scale=1, info="Output video frame rate.")
+                    encode_format = gr.Dropdown(
+                        label="Format",
+                        choices=["MP4 (H.264)", "ProRes 4444 (MOV)", "ProRes HQ (MOV)"],
+                        value="MP4 (H.264)",
+                        scale=1,
+                        info="MP4 for sharing, ProRes for lossless editing.",
+                    )
+                with gr.Row():
+                    encode_btn = gr.Button("Encode Video", variant="primary", scale=2)
+                encode_status = gr.Textbox(label="Encode Status", interactive=False, lines=2)
 
             # ----------------------------------------------------------------
             # TAB: Run
@@ -1100,7 +1218,7 @@ def make_ui():
                 data.get("lock_palette", False),
                 data.get("target_palette", ""),
                 _num(data.get("frames_per_second", 15), 15),
-                _num(data.get("save_every", 50), 50),
+                _num(data.get("save_every", 0), 0),
                 _num(data.get("display_every", 50), 50),
                 data.get("file_namespace", "default"),
                 data.get("allow_overwrite", True),
@@ -1141,6 +1259,17 @@ def make_ui():
         timer.tick(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
         load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input])
         refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
+
+        # Encode video callbacks
+        def refresh_encode_list():
+            runs = get_encodable_runs()
+            choices = [(lbl, path) for lbl, path in runs]
+            return gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
+
+        encode_refresh_btn.click(fn=refresh_encode_list, outputs=[encode_run_dropdown])
+        encode_btn.click(fn=encode_video, inputs=[encode_run_dropdown, encode_fps, encode_format], outputs=[encode_status])
+        # Auto-populate on load
+        demo.load(fn=refresh_encode_list, outputs=[encode_run_dropdown])
 
     return demo
 

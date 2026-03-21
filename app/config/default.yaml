@@ -136,7 +136,7 @@ allow_overwrite: true
 display_every: 50
 clear_every: 0
 display_scale: 1
-save_every: 50
+save_every: 0
 
 backups: 3
 show_graphs: false
