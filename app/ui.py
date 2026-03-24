@@ -3,7 +3,7 @@ pytti Portable UI
 =================
 Run via launch.bat — do not run directly with system Python.
 """
-__version__ = "1.0.0-beta"
+__version__ = "1.0.0-alpha"
 import os
 import random
 import re
@@ -99,6 +99,7 @@ TIPS = {
     "file_namespace": "Name of the output subfolder inside images_out/. Change this for each new run.",
     "frames_per_second": "Playback FPS when assembling the final video.",
     "save_every": "Save a frame every N steps. 0 = auto-match steps_per_frame (recommended). Set manually to override.",
+    "breath_mode": "Gradually blend from init image to CLIP-optimized. Frame 1 = init image, last frame = fully optimized. Requires init image.",
     "display_every": "Update the live preview every N optimization steps.",
     "allow_overwrite": "If disabled, existing output files are kept and new ones are numbered.",
 }
@@ -199,6 +200,7 @@ HELP_SECTIONS = [
         ("display_every", "Update the live preview every N steps. Lower = more frequent updates but slightly slower.", "number"),
         ("allow_overwrite", "If enabled, existing frames are overwritten on re-run. If disabled, new frames get incremented filenames to avoid data loss.", "bool"),
         ("backups", "Number of rolling <code>.bak</code> backup files to keep per run. These store image model weights. <code>0</code> = no backups. <code>3</code> is a good default — keeps the last 3 frames' state.", "number"),
+        ("breath_mode", "When enabled, saved frames linearly crossfade from the <code>init_image</code> to the CLIP-optimized output. Frame 1 is nearly 100% the init image; the final frame is 100% optimized. Requires <code>init_image</code> to be set. Works with all animation modes.", "bool"),
     ]),
 ]
 
@@ -505,14 +507,16 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
     if not pngs:
         return "No PNG frames found."
 
-    # Detect naming pattern from first file (e.g. default_1.png)
+    # Detect naming pattern from first file (e.g. default_0001.png or default_1.png)
     first = pngs[0].name
-    # Extract prefix: everything before the last _N.png
-    m = re.match(r"^(.+_)\d+\.png$", first)
+    m = re.match(r"^(.+_)(\d+)\.png$", first)
     if not m:
         return f"Cannot parse frame naming pattern from: {first}"
     prefix = m.group(1)
-    pattern = str(frames_path / f"{prefix}%d.png")
+    digits = len(m.group(2))
+    # Use zero-padded format if frames are padded (e.g. %04d), otherwise %d
+    fmt = f"%0{digits}d" if digits > 1 else "%d"
+    pattern = str(frames_path / f"{prefix}{fmt}.png")
 
     # Find start number
     numbers = []
@@ -635,6 +639,7 @@ def build_conf_dict(
     depth_stabilization_weight, edge_stabilization_weight, flow_stabilization_weight,
     reencode_each_frame,
     input_audio, input_audio_offset, flow_long_term_samples,
+    breath_mode,
 ):
     return {
         "scenes": " ".join(scenes.split()),
@@ -710,6 +715,7 @@ def build_conf_dict(
         "input_audio": input_audio.strip().strip("\"'()"),
         "input_audio_offset": float(input_audio_offset),
         "flow_long_term_samples": int(flow_long_term_samples),
+        "breath_mode": breath_mode,
     }
 
 
@@ -883,7 +889,17 @@ _THEME = gr.themes.Base(primary_hue="cyan", neutral_hue="slate").set(
 def make_ui():
     cfg = load_defaults()
 
-    with gr.Blocks(title="PyTTI", theme=_THEME, css=_THEME_CSS) as demo:
+    _AUTO_SCROLL_JS = """
+    () => {
+        const obs = new MutationObserver(() => {
+            const el = document.querySelector('#log-box textarea');
+            if (el) el.scrollTop = el.scrollHeight;
+        });
+        const target = document.getElementById('log-box');
+        if (target) obs.observe(target, {childList: true, subtree: true, characterData: true});
+    }
+    """
+    with gr.Blocks(title="PyTTI", theme=_THEME, css=_THEME_CSS, js=_AUTO_SCROLL_JS) as demo:
         gr.HTML("""
         <div style="display:flex; align-items:baseline; justify-content:space-between; padding:12px 0 4px; border-bottom:1px solid #0d3048; margin-bottom:16px;">
             <div>
@@ -1033,6 +1049,7 @@ def make_ui():
                 with gr.Row():
                     allow_overwrite = gr.Checkbox(label="Allow Overwrite", value=cfg.get("allow_overwrite", True), info=TIPS["allow_overwrite"])
                     backups = gr.Number(label="Backups", value=cfg.get("backups", 0), precision=0, info="Number of backup copies to keep for each frame. 0 = no backups.")
+                breath_mode = gr.Checkbox(label="Breath Mode", value=cfg.get("breath_mode", False), info=TIPS["breath_mode"])
 
                 gr.Markdown("### Encode Video")
                 with gr.Row(equal_height=True):
@@ -1123,6 +1140,7 @@ def make_ui():
             depth_stabilization_weight, edge_stabilization_weight, flow_stabilization_weight,
             reencode_each_frame,
             input_audio, input_audio_offset, flow_long_term_samples,
+            breath_mode,
         ]
 
         # ----------------------------------------------------------------
@@ -1237,6 +1255,7 @@ def make_ui():
                 data.get("input_audio", ""),
                 _num(data.get("input_audio_offset", 0), 0),
                 _num(data.get("flow_long_term_samples", 1), 1),
+                data.get("breath_mode", False),
                 conf_display,
             ]
 

@@ -27,6 +27,8 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - **Multiple image models**: Limited Palette, VQGAN (multiple checkpoints)
 - **CLIP-guided rendering** with multi-model ensemble (ViT-B/32, ViT-B/16, RN50x4, etc.)
 - **Video Source mode** for style transfer onto existing video
+- **Breath mode** — linear crossfade from init image to CLIP-optimized output over the full render. Frame 1 is your original image; the final frame is fully transformed by CLIP. Creates smooth "emergence" animations showing the AI interpretation gradually taking over
+- **Video encoding** — built-in ffmpeg encoding (MP4 H.264, ProRes 4444, ProRes HQ) directly from the Output tab
 - **Audioreactive** animation support
 - **Config system** powered by Hydra — save, load, and share render presets as YAML files
 
