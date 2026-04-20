@@ -143,6 +143,19 @@ PYTTI_UPDATEFUNC_PATCHES = [
     ),
 ]
 
+# ── pytti-core patches: LossOrchestratorClass.py ─────────────────────────────
+
+PYTTI_LOSSORCH = SITE_PACKAGES / "pytti" / "LossAug" / "LossOrchestratorClass.py"
+
+PYTTI_LOSSORCH_PATCHES = [
+    # Fix Windows path colons breaking the prompt parser —
+    # don't embed full init_image path in loss name
+    (
+        '                f"init image ({params.init_image})",',
+        '                f"init image",',
+    ),
+]
+
 # ── Apply patches ───────────────────────────────────────────────────────────
 
 def apply_patches(target, patches, label):
@@ -176,3 +189,5 @@ if __name__ == "__main__":
     apply_patches(PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py")
     print("Patching update_func.py...")
     apply_patches(PYTTI_UPDATEFUNC, PYTTI_UPDATEFUNC_PATCHES, "update_func.py")
+    print("Patching LossOrchestratorClass.py...")
+    apply_patches(PYTTI_LOSSORCH, PYTTI_LOSSORCH_PATCHES, "LossOrchestratorClass.py")
