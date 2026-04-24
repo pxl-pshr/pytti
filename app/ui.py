@@ -515,8 +515,8 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
     prefix = m.group(1)
     digits = len(m.group(2))
     # Use zero-padded format if frames are padded (e.g. %04d), otherwise %d
-    fmt = f"%0{digits}d" if digits > 1 else "%d"
-    pattern = str(frames_path / f"{prefix}{fmt}.png")
+    num_fmt = f"%0{digits}d" if digits > 1 else "%d"
+    pattern = str(frames_path / f"{prefix}{num_fmt}.png")
 
     # Find start number
     numbers = []
