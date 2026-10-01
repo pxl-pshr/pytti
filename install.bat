@@ -64,15 +64,39 @@ exit /b 0
 :: neither depends on them nor uninstalls them
 set "PYTHONNOUSERSITE=1"
 
-:: Check git is available
-git --version >nul 2>&1
-if errorlevel 1 (
-    echo %RED%  ERROR: git is not installed or not on PATH.%R%
-    echo %DIM%  Install it from https://git-scm.com and try again.%R%
+:: Opening install.bat from inside a ZIP in Explorer extracts only the .bat itself
+if not exist app\system_check.ps1 (
+    echo %RED%  ERROR: The app folder is missing.%R%
+    echo %DIM%  If you opened install.bat from inside a ZIP file, extract the whole ZIP first.%R%
     echo.
     pause
     exit /b 1
 )
+
+:: Stop now, not an hour of downloads later, if this PC can't run PyTTI
+echo   %BOLD%Checking your system%R%
+powershell -NoProfile -ExecutionPolicy Bypass -File app\system_check.ps1
+set "CHECK=%errorlevel%"
+if "%CHECK%"=="0" goto :checks_passed
+echo.
+if "%CHECK%"=="20" goto :checks_failed
+if "%CHECK%"=="10" (
+    choice /c YN /m "  Continue anyway"
+) else (
+    echo %YELLOW%  The system check could not run.%R%
+    echo.
+    choice /c YN /m "  Install without checking"
+)
+if errorlevel 2 exit /b 1
+goto :checks_passed
+
+:checks_failed
+echo %RED%  This PC can't run PyTTI yet. Fix the problems marked FAIL, then run install.bat again.%R%
+echo.
+pause
+exit /b 1
+
+:checks_passed
 
 :: ---------------------------------------------------------------------------
 call :step 1 6 "Downloading Python 3.10.11"

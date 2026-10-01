@@ -39,7 +39,10 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
   - RTX 50xx (Blackwell) is **not supported**
 - Up-to-date NVIDIA drivers
 - [Git](https://git-scm.com) installed and on PATH
+- [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
 - ~8 GB disk space (after install)
+
+`install.bat` checks these before downloading anything and tells you what to fix.
 
 ## Quick Start
 
@@ -65,6 +68,7 @@ pytti/
 ├── app/
 │   ├── ui.py            # Gradio web UI
 │   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
+│   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.
 │   └── config/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
