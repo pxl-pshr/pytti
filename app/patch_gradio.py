@@ -1,32 +1,21 @@
 """
 patch_gradio.py
 ---------------
-Post-install patches for known bugs in dependencies.
+Patches to pytti-core that this UI relies on (breath mode, save_every=0,
+zero-padded frame names, Windows paths, safe video conversion).
 
-Run once after pip-installing all packages:
-    python patch_gradio.py
+Run by install.bat and on every launch.bat, so an install picks up new patches
+after `git pull`. Re-running is safe: patches already applied are skipped. If any
+patch can't be applied, nothing is written and the script exits with status 1.
+
+The gradio_client schema fix is applied at runtime by ui.py instead.
+
+    python patch_gradio.py [--quiet]
 """
 import pathlib
 import sys
 
 SITE_PACKAGES = pathlib.Path(__file__).parent.parent / "python" / "Lib" / "site-packages"
-
-# ── Gradio patches ──────────────────────────────────────────────────────────
-
-GRADIO_TARGET = SITE_PACKAGES / "gradio_client" / "utils.py"
-
-GRADIO_PATCHES = [
-    # Patch 1: get_type() guard — returns "unknown" instead of crashing on bool
-    (
-        'def get_type(schema: dict):\n    if "const" in schema:',
-        'def get_type(schema: dict):\n    if not isinstance(schema, dict):\n        return "unknown"\n    if "const" in schema:',
-    ),
-    # Patch 2: _json_schema_to_python_type() guard — bool/None schema → "Any"
-    (
-        'def _json_schema_to_python_type(schema: Any, defs) -> str:\n    """Convert the json schema into a python type hint"""\n    if schema == {}:\n        return "Any"',
-        'def _json_schema_to_python_type(schema: Any, defs) -> str:\n    """Convert the json schema into a python type hint"""\n    if isinstance(schema, bool) or schema is None:\n        return "Any"\n    if schema == {}:\n        return "Any"',
-    ),
-]
 
 # ── pytti-core patches: workhorse.py ───────────────────────────────────────
 
@@ -113,6 +102,23 @@ PYTTI_IMAGEGUIDE_PATCHES = [
 
 PYTTI_UPDATEFUNC = SITE_PACKAGES / "pytti" / "update_func.py"
 
+# The breath mode block as the previous version of this script inserted it; installs
+# patched with it are upgraded in place
+_BREATH_MODE_V1 = (
+    '        filename = f"{OUTPATH}/{file_namespace}/{base_name}_{n:04d}.png"\n'
+    '\n'
+    '        # Breath mode: blend init image with optimized output\n'
+    '        breath_mode = getattr(params, "breath_mode", False) if params else False\n'
+    '        if breath_mode and init_image_pil is not None:\n'
+    '            num_scenes = max(1, len([s for s in params.scenes.split("||") if s.strip()]))\n'
+    '            total_frames = max(1, (num_scenes * params.steps_per_scene) // save_every)\n'
+    '            progress = min(n / total_frames, 1.0)\n'
+    '            init_resized = init_image_pil.resize(im.size, Image.LANCZOS)\n'
+    '            im = Image.blend(init_resized, im, alpha=progress)\n'
+    '\n'
+    '        im.save(filename)'
+)
+
 PYTTI_UPDATEFUNC_PATCHES = [
     # Accept init_image_pil parameter
     (
@@ -124,20 +130,27 @@ PYTTI_UPDATEFUNC_PATCHES = [
         '    init_image_pil=None,\n'
         '):',
     ),
-    # Zero-pad frame filenames + breath mode blend
+    # Zero-pad frame filenames + breath mode blend. Only blends when the user set an
+    # init image (Video Source mode fills init_image_pil with the clip's first frame),
+    # and resizes it once rather than for every saved frame.
     (
-        '        filename = f"{OUTPATH}/{file_namespace}/{base_name}_{n}.png"\n'
-        '        im.save(filename)',
+        (
+            '        filename = f"{OUTPATH}/{file_namespace}/{base_name}_{n}.png"\n'
+            '        im.save(filename)',
+            _BREATH_MODE_V1,
+        ),
         '        filename = f"{OUTPATH}/{file_namespace}/{base_name}_{n:04d}.png"\n'
         '\n'
         '        # Breath mode: blend init image with optimized output\n'
         '        breath_mode = getattr(params, "breath_mode", False) if params else False\n'
-        '        if breath_mode and init_image_pil is not None:\n'
+        '        if breath_mode and init_image_pil is not None and params.init_image:\n'
         '            num_scenes = max(1, len([s for s in params.scenes.split("||") if s.strip()]))\n'
         '            total_frames = max(1, (num_scenes * params.steps_per_scene) // save_every)\n'
         '            progress = min(n / total_frames, 1.0)\n'
-        '            init_resized = init_image_pil.resize(im.size, Image.LANCZOS)\n'
-        '            im = Image.blend(init_resized, im, alpha=progress)\n'
+        '            size_key = (id(init_image_pil), im.size)\n'
+        '            if getattr(update, "breath_init", (None, None))[0] != size_key:\n'
+        '                update.breath_init = (size_key, init_image_pil.resize(im.size, Image.LANCZOS))\n'
+        '            im = Image.blend(update.breath_init[1], im, alpha=progress)\n'
         '\n'
         '        im.save(filename)',
     ),
@@ -156,38 +169,110 @@ PYTTI_LOSSORCH_PATCHES = [
     ),
 ]
 
+# ── pytti-core patches: MSELossClass.py / LatentLossClass.py ─────────────────
+
+PYTTI_MSELOSS = SITE_PACKAGES / "pytti" / "LossAug" / "MSELossClass.py"
+PYTTI_LATENTLOSS = SITE_PACKAGES / "pytti" / "LossAug" / "LatentLossClass.py"
+
+PYTTI_IMAGE_PROMPT_PATCHES = [
+    # Fix Windows paths in direct image prompts and weight masks: the old split
+    # cut "C:\img.png" at the drive letter. A colon followed by a slash or
+    # backslash (C:\, C:/, https://) is part of the path, not a weight separator.
+    (
+        r'prompt_string, r"(?<!^http)(?<!s):|:(?!/)", ["", "1", "-inf"]',
+        r'prompt_string, r":(?![\\/])", ["", "1", "-inf"]',
+    ),
+]
+
+# ── pytti-core patches: rotoscoper.py ─────────────────────────────────────────
+
+PYTTI_ROTOSCOPER = SITE_PACKAGES / "pytti" / "rotoscoper.py"
+
+PYTTI_ROTOSCOPER_PATCHES = [
+    (
+        'import imageio, subprocess\n',
+        'import imageio, os, subprocess\n',
+    ),
+    # Convert Video Source clips to a temp file and publish it only if ffmpeg
+    # succeeds, so an interrupted conversion is never reused as <video>_converted.mp4
+    (
+        '            "copy",  # copy audio codec cause why not\n'
+        '            out_fname,\n'
+        '        ]\n'
+        '        logger.debug(cmd)\n'
+        '\n'
+        '        subprocess.run(cmd)\n',
+        '            "copy",  # copy audio codec cause why not\n'
+        '            "-y",\n'
+        '            out_fname + ".part.mp4",\n'
+        '        ]\n'
+        '        logger.debug(cmd)\n'
+        '\n'
+        '        subprocess.run(cmd, check=True)\n'
+        '        os.replace(out_fname + ".part.mp4", out_fname)\n',
+    ),
+]
+
+TARGETS = [
+    (PYTTI_WORKHORSE, PYTTI_WORKHORSE_PATCHES, "workhorse.py"),
+    (PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py"),
+    (PYTTI_UPDATEFUNC, PYTTI_UPDATEFUNC_PATCHES, "update_func.py"),
+    (PYTTI_LOSSORCH, PYTTI_LOSSORCH_PATCHES, "LossOrchestratorClass.py"),
+    (PYTTI_MSELOSS, PYTTI_IMAGE_PROMPT_PATCHES, "MSELossClass.py"),
+    (PYTTI_LATENTLOSS, PYTTI_IMAGE_PROMPT_PATCHES, "LatentLossClass.py"),
+    (PYTTI_ROTOSCOPER, PYTTI_ROTOSCOPER_PATCHES, "rotoscoper.py"),
+]
+
 # ── Apply patches ───────────────────────────────────────────────────────────
 
-def apply_patches(target, patches, label):
+def plan_patches(target, patches, label):
+    """Return (patched text or None if already up to date, problems) without writing anything.
+
+    A patch's old text can be a tuple of alternatives, e.g. the upstream code and the
+    code an earlier version of a patch produced.
+    """
     if not target.exists():
-        print(f"  SKIP: {target} not found — is {label} installed?")
-        return
+        return None, [f"{label}: {target} not found. Is pytti-core installed?"]
     text = target.read_text(encoding="utf-8")
     changed = False
-    for old, new in patches:
-        if old in text:
-            text = text.replace(old, new)
+    problems = []
+    for olds, new in patches:
+        olds = (olds,) if isinstance(olds, str) else olds
+        found = [(old, text.count(old)) for old in olds if old in text]
+        if len(found) == 1 and found[0][1] == 1:
+            text = text.replace(found[0][0], new)
             changed = True
-            print(f"  Applied: {old[:60].strip()!r}...")
-        elif new in text:
-            print(f"  Already patched: {old[:60].strip()!r}...")
+        elif not found and new in text:
+            continue  # already applied
         else:
-            print(f"  NOT FOUND: {old[:60].strip()!r}...")
-    if changed:
+            where = "not found" if not found else "found more than once"
+            problems.append(f"{label}: {where}: {olds[0][:60].strip()!r}...")
+    return (text if changed else None), problems
+
+
+def main():
+    quiet = "--quiet" in sys.argv
+    planned, problems = [], []
+    for target, patches, label in TARGETS:
+        text, file_problems = plan_patches(target, patches, label)
+        problems += file_problems
+        if text is not None:
+            planned.append((target, text, label))
+
+    # Several patches depend on each other across files, so apply all or nothing
+    if problems:
+        print("  ERROR: pytti-core doesn't match the expected version. No files were changed.")
+        for problem in problems:
+            print(f"    {problem}")
+        return 1
+
+    for target, text, label in planned:
         target.write_text(text, encoding="utf-8")
-        print(f"  {label} patch complete.")
-    else:
-        print(f"  {label} already up to date.")
+        print(f"  Patched {label}")
+    if not planned and not quiet:
+        print("  All patches already applied.")
+    return 0
 
 
 if __name__ == "__main__":
-    print("Patching gradio_client...")
-    apply_patches(GRADIO_TARGET, GRADIO_PATCHES, "gradio_client")
-    print("Patching workhorse.py...")
-    apply_patches(PYTTI_WORKHORSE, PYTTI_WORKHORSE_PATCHES, "workhorse.py")
-    print("Patching ImageGuide.py...")
-    apply_patches(PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py")
-    print("Patching update_func.py...")
-    apply_patches(PYTTI_UPDATEFUNC, PYTTI_UPDATEFUNC_PATCHES, "update_func.py")
-    print("Patching LossOrchestratorClass.py...")
-    apply_patches(PYTTI_LOSSORCH, PYTTI_LOSSORCH_PATCHES, "LossOrchestratorClass.py")
+    sys.exit(main())

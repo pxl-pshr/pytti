@@ -57,7 +57,7 @@ input_audio: ""
 input_audio_offset: 0
 input_audio_filters: []
 
-pre_animation_steps: 50
+pre_animation_steps: 80  # a multiple of steps_per_frame, so frames are saved right before each camera move
 lock_camera: true
 
 translate_x: '22'
@@ -139,7 +139,7 @@ display_scale: 1
 save_every: 0
 
 breath_mode: false
-backups: 3
+backups: 0  # only Video Source mode reads backups; the UI raises this for it automatically
 show_graphs: false
 approximate_vram_usage: false
 use_tensorboard: false

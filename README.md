@@ -27,9 +27,9 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - **Multiple image models**: Limited Palette, VQGAN (multiple checkpoints)
 - **CLIP-guided rendering** with multi-model ensemble (ViT-B/32, ViT-B/16, RN50x4, etc.)
 - **Video Source mode** for style transfer onto existing video
-- **Breath mode** — linear crossfade from init image to CLIP-optimized output over the full render. Frame 1 is your original image; the final frame is fully transformed by CLIP. Creates smooth "emergence" animations showing the AI interpretation gradually taking over
+- **Breath mode** — linear crossfade from init image to CLIP-optimized output over the full render. Frame 1 is your original image; the final frame is fully transformed by CLIP. Creates smooth "emergence" animations showing the AI interpretation gradually taking over (best with little or no camera motion)
 - **Video encoding** — built-in ffmpeg encoding (MP4 H.264, ProRes 4444, ProRes HQ) directly from the Output tab
-- **Audioreactive** animation support
+- **Audioreactive** animation support (audio filters are set in the preset YAML)
 - **Config system** powered by Hydra — save, load, and share render presets as YAML files
 
 ## Requirements
@@ -52,7 +52,7 @@ cd pytti
 2. Double-click **`launch.bat`**
 3. A browser window opens — start rendering
 
-To update: `git pull` from the pytti folder.
+To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-core patches automatically.
 
 The first render will download CLIP and depth models (~1-4 GB), cached after that.
 
@@ -64,7 +64,7 @@ pytti/
 ├── launch.bat           # Starts the Gradio UI
 ├── app/
 │   ├── ui.py            # Gradio web UI
-│   ├── patch_gradio.py  # Post-install dependency patches
+│   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
 │   └── config/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
@@ -85,6 +85,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette or VQGAN) toward te
 ## Credits
 
 - [David Marx](https://github.com/dmarx) & [sportsracer48](https://github.com/sportsracer48) — original pytti creators and maintainers
+- [Katherine Crowson](https://github.com/crowsonkb) — CLIP-guided generation techniques pytti-core builds on
 - [pytti-core](https://github.com/pytti-tools/pytti-core) — the rendering engine
 - [CLIP](https://github.com/openai/CLIP) — OpenAI's vision-language model
 - [taming-transformers](https://github.com/CompVis/taming-transformers) — VQGAN

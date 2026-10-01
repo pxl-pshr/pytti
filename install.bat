@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal
 cd /d "%~dp0"
 
 :: Enable ANSI escape codes (Windows 10+)
@@ -13,6 +13,9 @@ set "DIM=%ESC%[90m"
 set "BOLD=%ESC%[1m"
 set "R=%ESC%[0m"
 
+:: The version lives in app\ui.py
+for /f "tokens=2 delims== " %%v in ('findstr /b /c:"__version__" app\ui.py') do set "VERSION=%%~v"
+
 cls
 echo.
 echo  %CYAN%######  #   # ##### ##### ###%R%
@@ -21,18 +24,45 @@ echo  %CYAN%######   ##     #     #    # %R%
 echo  %CYAN%#        #      #     #    # %R%
 echo  %CYAN%#        #      #     #   ###%R%
 echo.
-echo %DIM%  Neural Image Synthesizer  %YELLOW%v1.0.0-beta%R%
+echo %DIM%  Neural Image Synthesizer  %YELLOW%v%VERSION%%R%
 echo.
 echo %DIM%  ----------------------------------------%R%
 echo.
 
-if exist python\python.exe (
-    echo %YELLOW%  Already installed.%R%
-    echo %DIM%  Delete the python\ folder to reinstall.%R%
+if exist python\.install-complete goto :already_installed
+if not exist python\python.exe goto :install
+
+:: python\ exists without the completion marker: an install made before the marker
+:: existed, or one that stopped partway through
+python\python.exe -c "import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(m) for m in ['gradio', 'torch', 'pytti']) else 1)" >nul 2>&1
+if not errorlevel 1 (
+    type nul > python\.install-complete
+    goto :already_installed
+)
+echo %YELLOW%  A previous install did not finish.%R%
+echo.
+choice /c YN /m "  Delete the python folder and start over"
+if errorlevel 2 exit /b 1
+rmdir /s /q python
+if exist python (
+    echo %RED%  Could not delete the python folder. Close PyTTI if it is running and try again.%R%
     echo.
     pause
-    exit /b 0
+    exit /b 1
 )
+goto :install
+
+:already_installed
+echo %YELLOW%  Already installed.%R%
+echo %DIM%  Delete the python\ folder to reinstall.%R%
+echo.
+pause
+exit /b 0
+
+:install
+:: Keep pip away from packages in the user's own Python (AppData), so the install
+:: neither depends on them nor uninstalls them
+set "PYTHONNOUSERSITE=1"
 
 :: Check git is available
 git --version >nul 2>&1
@@ -71,7 +101,8 @@ call :ok
 
 :: ---------------------------------------------------------------------------
 call :step 4 6 "Installing pip"
-powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'get-pip.py'"
+:: The versioned URL appears once pip drops Python 3.10; until then use the current one
+powershell -NoProfile -Command "try { Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/pip/3.10/get-pip.py' -OutFile 'get-pip.py' } catch { Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'get-pip.py' }"
 if errorlevel 1 goto :error
 python\python.exe get-pip.py
 if errorlevel 1 goto :error
@@ -98,7 +129,9 @@ python\python.exe -m pip install --no-warn-script-location torch==2.0.0 torchvis
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] dependencies%R%
-python\python.exe -m pip install --no-warn-script-location ipython scipy requests gradio==4.44.1 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorflow==2.10.0
+:: fastapi/pydantic pinned to versions gradio 4.44.1 works with: newer ones pull in
+:: starlette 1.x, which breaks gradio's main page
+python\python.exe -m pip install --no-warn-script-location ipython scipy requests gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorflow==2.10.0
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] AdaBins%R%
@@ -118,7 +151,8 @@ python\python.exe -m pip install --no-warn-script-location git+https://github.co
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] pytti-core%R%
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/pytti-core.git
+:: Pinned: app\patch_gradio.py patches this exact version
+python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/pytti-core.git@b5070aaeab05204f6eee0ff81c657bc486b9cdce
 if errorlevel 1 goto :error
 
 call :ok
@@ -127,6 +161,7 @@ call :ok
 call :step 6 6 "Applying patches"
 python\python.exe app\patch_gradio.py
 if errorlevel 1 goto :error
+type nul > python\.install-complete
 call :ok
 
 :: ---------------------------------------------------------------------------

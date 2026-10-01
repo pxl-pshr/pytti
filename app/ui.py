@@ -3,11 +3,19 @@ pytti Portable UI
 =================
 Run via launch.bat — do not run directly with system Python.
 """
-__version__ = "1.0.0-alpha"
+__version__ = "1.0.0-beta"  # install.bat and launch.bat read this line for their banners
+import atexit
+import contextlib
+import html
+import inspect
 import os
 import random
 import re
+import shutil
+import signal
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -44,7 +52,7 @@ import yaml
 # Tooltips
 # ---------------------------------------------------------------------------
 TIPS = {
-    "scenes": "Text prompts separated by | — each becomes a scene. The render optimizes toward these descriptions.",
+    "scenes": "Text prompts the render optimizes toward. Prompts separated by | are combined within a scene; use || to start a new scene.",
     "scene_prefix": "Prepended to every scene prompt. Useful for style keywords shared across all scenes.",
     "scene_suffix": "Appended to every scene prompt. Useful for negative or quality terms applied globally.",
     "direct_image_prompts": "Path or URL to an image used as a visual prompt (pixel-level guidance).",
@@ -58,13 +66,13 @@ TIPS = {
     "frame_stride": "How many source video frames to skip between animation frames.",
     "width": "Output image width in pixels.",
     "height": "Output image height in pixels.",
-    "translate_x": "Horizontal camera movement per frame. Supports Python expressions with t (frame number).",
-    "translate_y": "Vertical camera movement per frame. Supports Python expressions with t.",
-    "translate_z_3d": "Forward/back camera movement per frame (3D mode). Supports Python expressions with t.",
-    "rotate_2d": "Rotation in degrees per frame (2D mode). Supports Python expressions with t.",
-    "rotate_3d": "Quaternion [w, x, y, z] rotation per frame (3D mode). Supports Python expressions with t.",
-    "zoom_x_2d": "Horizontal zoom per frame (2D mode). Supports Python expressions with t.",
-    "zoom_y_2d": "Vertical zoom per frame (2D mode). Supports Python expressions with t.",
+    "translate_x": "Horizontal camera movement per frame. Supports Python expressions with t (time in seconds).",
+    "translate_y": "Vertical camera movement per frame. Supports Python expressions with t (time in seconds).",
+    "translate_z_3d": "Forward/back camera movement per frame (3D mode). Supports Python expressions with t (time in seconds).",
+    "rotate_2d": "Rotation in degrees per frame (2D mode). Supports Python expressions with t (time in seconds).",
+    "rotate_3d": "Quaternion [w, x, y, z] rotation per frame (3D mode). Supports Python expressions with t (time in seconds).",
+    "zoom_x_2d": "Horizontal zoom per frame (2D mode). Supports Python expressions with t (time in seconds).",
+    "zoom_y_2d": "Vertical zoom per frame (2D mode). Supports Python expressions with t (time in seconds).",
     "lock_camera": "Freeze camera during pre-animation steps so the image develops before motion begins.",
     "field_of_view": "Camera field of view in degrees (3D mode). Lower = telephoto, higher = wide-angle.",
     "near_plane": "Near clipping plane distance (3D mode).",
@@ -79,8 +87,8 @@ TIPS = {
     "cutouts": "Number of random crops used per CLIP evaluation. More = richer gradients, slower.",
     "cut_pow": "Controls cutout size distribution. Higher = more small crops (fine detail).",
     "learning_rate": "Optimizer step size. Leave blank for auto. Lower = more stable but slower.",
-    "seed": "Random seed for reproducibility. Leave blank for a random seed each run.",
-    "gradient_accumulation_steps": "Accumulate gradients over N steps before updating. Higher = more stable, uses less VRAM.",
+    "seed": "Random seed for reproducibility. Leave blank for a new random seed each run; the seed used is shown in the log.",
+    "gradient_accumulation_steps": "Split each step's cutouts into N smaller batches. Higher = less VRAM but slower. Must divide Cutouts evenly.",
     "palette_size": "Number of colors per palette swatch (Limited Palette mode).",
     "palettes": "Number of palette swatches (Limited Palette mode).",
     "gamma": "Gamma correction applied to the palette (Limited Palette mode).",
@@ -95,13 +103,12 @@ TIPS = {
     "edge_stabilization_weight": "Resist changes to edges between frames.",
     "flow_stabilization_weight": "Optical flow stabilization — aligns each frame to the previous one.",
     "flow_long_term_samples": "How many past frames to consider for flow stabilization.",
-    "input_audio": "Path to an audio file for audioreactive animation.",
-    "file_namespace": "Name of the output subfolder inside images_out/. Change this for each new run.",
+    "input_audio": "Path to an audio file for audioreactive animation. Only used when input_audio_filters are defined in the preset YAML.",
+    "file_namespace": "Name for the frame files. Each render is saved to outputs/<date>/<time>/images_out/<namespace>/ inside the app folder.",
     "frames_per_second": "Playback FPS when assembling the final video.",
     "save_every": "Save a frame every N steps. 0 = auto-match steps_per_frame (recommended). Set manually to override.",
-    "breath_mode": "Gradually blend from init image to CLIP-optimized. Frame 1 = init image, last frame = fully optimized. Requires init image.",
-    "display_every": "Update the live preview every N optimization steps.",
-    "allow_overwrite": "If disabled, existing output files are kept and new ones are numbered.",
+    "breath_mode": "Gradually blend from init image to CLIP-optimized. Frame 1 = init image, last frame = fully optimized. Requires init image; best with little camera motion.",
+    "display_every": "Log losses every N optimization steps. The Latest Frame preview updates whenever a frame is saved.",
 }
 
 # ---------------------------------------------------------------------------
@@ -112,17 +119,17 @@ HELP_SECTIONS = [
         ("scenes", "Text prompts that describe what the image should look like. Separate prompts within a scene with <code>|</code> and weight them with <code>:weight</code> (e.g. <code>forest:2</code> for double weight). Use <code>||</code> to separate scenes — the render transitions between them using <code>interpolation_steps</code> via linear interpolation in CLIP semantic space. Negative weights push the image <em>away</em> from a concept (e.g. <code>blurry:-1</code>). You can also set a <code>:stop</code> value to freeze a prompt after a threshold is reached.", "string"),
         ("scene_prefix", "Text prepended to every scene prompt. Useful for global style keywords like <code>oil painting |</code> or <code>highly detailed |</code> that you want applied everywhere without repeating them in each scene.", "string"),
         ("scene_suffix", "Text appended to every scene prompt. Commonly used for negative prompts like <code>| text:-1 | watermark:-1</code> to suppress unwanted elements globally across all scenes.", "string"),
-        ("direct_image_prompts", "Path or URL to an image used as a direct (pixel-level) visual prompt. CLIP compares the render against this image literally — useful for style transfer. Supports <code>weight_mask</code> syntax: e.g. <code>image.png:1.5_mask.png</code>. Video masks must be MP4.", "path"),
+        ("direct_image_prompts", "Path or URL to an image used as a direct (pixel-level) visual prompt. CLIP compares the render against this image literally — useful for style transfer. Local paths such as <code>C:\\images\\ref.png</code> work; relative paths are looked up from the pytti folder. Supports <code>weight_mask</code> syntax: e.g. <code>image.png:1.5_mask.png</code>. Video masks must be MP4.", "path"),
         ("init_image", "Path to a starting image. The render begins from this instead of random noise, creating an initial focal point and layout. Leave blank for a random start. Tip: use with <code>semantic_init_weight</code> to keep the output resembling the init image throughout.", "path"),
-        ("direct_init_weight", "Treats the init image as a direct image prompt with this weight (pixel-level MSE loss). Default: <code>0</code>. Higher = stays closer to original pixels. <strong>Warning:</strong> filenames with underscores can cause parsing errors — use <code>semantic_init_weight</code> instead for complex filenames.", "weight"),
-        ("semantic_init_weight", "Treats the init image as a semantic (CLIP-level) prompt with this weight. Default: <code>0</code>. The render will <em>feel like</em> the init image without being pixel-locked to it. Safer than <code>direct_init_weight</code> with complex filenames. Mask paths go in <code>[ ]</code> brackets.", "weight"),
+        ("direct_init_weight", "Treats the init image as a direct image prompt with this weight (pixel-level MSE loss). Higher = stays closer to original pixels.", "weight"),
+        ("semantic_init_weight", "Treats the init image as a semantic (CLIP-level) prompt with this weight. The render will <em>feel like</em> the init image without being pixel-locked to it. Mask paths go in <code>[ ]</code> brackets.", "weight"),
     ]),
     ("Image Model", [
         ("image_model", "<strong>Limited Palette</strong>: fast, painterly look using discrete color swatches — total colors = <code>palette_size × palettes</code>. <strong>Unlimited Palette</strong>: per-pixel color, more photographic. <strong>VQGAN</strong>: classic neural art using a pretrained codebook (set <code>pixel_size: 1</code> with VQGAN to avoid VRAM issues).", "choice"),
-        ("vqgan_model", "Which VQGAN codebook to use. Only matters when <code>image_model</code> is VQGAN. Options: <code>sflickr</code>, <code>imagenet</code>, <code>coco</code>, <code>wikiart</code>, <code>openimages</code>. Each has a different visual style bias.", "choice"),
+        ("vqgan_model", "Which VQGAN codebook to use. Only matters when <code>image_model</code> is VQGAN. Options: <code>imagenet</code>, <code>coco</code>, <code>wikiart</code>, <code>sflckr</code>, <code>openimages</code>. Each has a different visual style bias. Checkpoints download on first use; the wikiart download server has been unreliable.", "choice"),
     ]),
     ("Animation", [
-        ("animation_mode", "<strong>off</strong>: single image, no animation. <strong>2D</strong>: pan/zoom/rotate the canvas each frame. <strong>3D</strong>: full 3D camera with MiDaS depth estimation. <strong>Video Source</strong>: warp frames of a source video using optical flow.", "choice"),
+        ("animation_mode", "<strong>off</strong>: single image, no animation. <strong>2D</strong>: pan/zoom/rotate the canvas each frame. <strong>3D</strong>: full 3D camera with AdaBins depth estimation. <strong>Video Source</strong>: warp frames of a source video using optical flow.", "choice"),
         ("translate_x", "Horizontal camera shift per frame (pixels). Accepts Python expressions using <code>t</code> (time in seconds, scaled by <code>frames_per_second</code>), e.g. <code>10*sin(t/30)</code>.", "expression"),
         ("translate_y", "Vertical camera shift per frame (pixels). Same expression support — <code>t</code> is time in seconds.", "expression"),
         ("translate_z_3d", "Forward/backward camera movement per frame (3D mode only). Positive = move forward into the scene. Expressions with <code>t</code> supported.", "expression"),
@@ -146,19 +153,19 @@ HELP_SECTIONS = [
     ]),
     ("Steps & Timing", [
         ("steps_per_scene", "Total optimization steps per scene. Frames generated = <code>steps_per_scene / steps_per_frame</code>. Must be at least <code>interpolation_steps</code>. More steps = more refined image and more frames.", "number"),
-        ("steps_per_frame", "Optimization steps between each animation frame. Lower = more frames (smoother video) but less refinement per frame. Default: <code>50</code>.", "number"),
-        ("interpolation_steps", "Steps for smooth crossfade between scenes (using <code>||</code> separator). Uses linear interpolation in CLIP semantic space. Default: <code>200</code>. Set to <code>0</code> to cut between scenes instantly.", "number"),
-        ("pre_animation_steps", "Steps to run before animation begins, with camera locked. Lets the image develop from noise before motion starts. Default: <code>250</code> (pytti-book) / <code>50</code> (this UI).", "number"),
+        ("steps_per_frame", "Optimization steps between each animation frame. Lower = more frames (smoother video) but less refinement per frame.", "number"),
+        ("interpolation_steps", "Steps for smooth crossfade between scenes (using <code>||</code> separator). Uses linear interpolation in CLIP semantic space. Set to <code>0</code> to cut between scenes instantly.", "number"),
+        ("pre_animation_steps", "Steps to run before animation begins, with camera locked. Lets the image develop from noise before motion starts.", "number"),
     ]),
     ("CLIP & Optimization", [
         ("cutouts", "Number of random crops (glimpses) per CLIP evaluation. More cutouts = richer gradients and better quality, but slower and less VRAM-efficient. 40–60 is typical.", "number"),
-        ("cut_pow", "Controls cutout size distribution. Default: <code>1</code>. Higher (2–3) = more small crops emphasizing fine detail but can be unstable. Lower = more large crops emphasizing global composition.", "number"),
-        ("cutout_border", "Fraction of each cutout devoted to border padding. Default: <code>0.25</code>. Higher = more context around each crop, which can improve coherence but reduces the effective crop area. <code>0</code> = no padding.", "number"),
+        ("cut_pow", "Controls cutout size distribution. Higher (2–3) = more small crops emphasizing fine detail but can be unstable. Lower = more large crops emphasizing global composition.", "number"),
+        ("cutout_border", "Fraction of each cutout devoted to border padding. Higher = more context around each crop, which can improve coherence but reduces the effective crop area. <code>0</code> = no padding.", "number"),
         ("learning_rate", "Optimizer step size. Leave blank for auto-tuning. Lower (0.05–0.1) = more stable but slower. Higher (0.2–0.5) = faster but can overshoot.", "number"),
-        ("reset_lr_each_frame", "Reset the optimizer at each animation frame boundary. Default: <code>true</code>. Clears Adam momentum buffers so each frame optimizes fresh. Disable to carry optimizer state across frames — can reduce color shifts but may cause instability.", "bool"),
-        ("smoothing_weight", "Total variation loss weight — penalizes sharp pixel-to-pixel differences. Higher = smoother, more painterly images. Lower = more detail and texture but potentially noisy. Default varies by image model.", "number"),
-        ("seed", "Pseudorandom seed for reproducibility. A fixed seed increases determinism — same seed + same config = similar output. Leave blank for a random seed each run.", "number"),
-        ("gradient_accumulation_steps", "Batch cutout processing over N mini-steps before updating. Must divide <code>cutouts</code> evenly. Higher = smoother optimization and less VRAM per step, but slower overall. Default: <code>1</code>.", "number"),
+        ("reset_lr_each_frame", "Reset the optimizer at each animation frame boundary. Clears Adam momentum buffers so each frame optimizes fresh. Disable to carry optimizer state across frames — can reduce color shifts but may cause instability.", "bool"),
+        ("smoothing_weight", "Total variation loss weight — penalizes sharp pixel-to-pixel differences. Higher = smoother, more painterly images. Lower = more detail and texture but potentially noisy.", "number"),
+        ("seed", "Pseudorandom seed for reproducibility. A fixed seed increases determinism — same seed + same config = similar output. Leave blank for a new random seed each run; the seed each render used is printed at the top of its log, so you can enter it here to repeat that render.", "number"),
+        ("gradient_accumulation_steps", "Splits each step's cutouts into N smaller batches that are summed into one update. Must divide <code>cutouts</code> evenly. Higher = less VRAM per batch but slower; it does not change the result.", "number"),
         ("ViTB32", "Enable the ViT-B/32 CLIP model. Fast, good at composition. Recommended as a baseline. Each CLIP model requires significant VRAM.", "bool"),
         ("ViTB16", "Enable the ViT-B/16 CLIP model. More detail-sensitive than B/32. Slightly slower.", "bool"),
         ("ViTL14", "Enable the ViT-L/14 CLIP model. High quality but significantly slower and uses more VRAM.", "bool"),
@@ -172,13 +179,13 @@ HELP_SECTIONS = [
     ("Limited Palette", [
         ("palette_size", "Number of colors per palette swatch. Total colors = <code>palette_size × palettes</code>. Lower (3–6) = more stylized/posterized. Higher (20–50) = smoother gradients.", "number"),
         ("palettes", "Number of independent palette swatches. More palettes = more color variety across the image. 12–30 is typical. Total colors = <code>palette_size × palettes</code>.", "number"),
-        ("gamma", "Relative gamma value for the palette. Default: <code>1</code>. Higher = darker with more contrast. Lower = brighter midtones.", "number"),
+        ("gamma", "Relative gamma value for the palette. Higher = darker with more contrast. Lower = brighter midtones.", "number"),
         ("hdr_weight", "Strength of gamma maintenance — pushes the palette toward higher dynamic range. <code>0</code> = disabled, 0.3–0.5 = subtle, 1.0+ = strong contrast boost.", "number"),
         ("palette_normalization_weight", "Keeps palette colors spread across the full brightness range, preventing individual palettes from being lost or going muddy/washed-out.", "number"),
         ("random_initial_palette", "Start with random colors instead of grayscale. Without this, palettes start grayscale and develop color during optimization. Good for abstract work.", "bool"),
-        ("lock_palette", "Freeze the palette so colors don't change during the render. Most useful when restoring from a backup — otherwise tends to produce grayscale output.", "bool"),
+        ("lock_palette", "Freeze the palette so colors don't change during the render. Palettes start grayscale, so this tends to produce grayscale output unless <code>random_initial_palette</code> or <code>target_palette</code> is used.", "bool"),
         ("target_palette", "Path to an image whose colors the palette will be pulled toward. The model extracts a color scheme from this image and uses it as a target.", "path"),
-        ("pixel_size", "Size of each pixel block in the output. <code>1</code> = full resolution. Higher values (2, 4, 8) create a chunky pixel-art look with larger 'pixels'. Affects all image models but most noticeable with Limited Palette.", "number"),
+        ("pixel_size", "Output scale factor. The image is optimized at <code>width × height</code> and saved at <code>(width × pixel_size) × (height × pixel_size)</code>. With Limited/Unlimited Palette each optimized pixel becomes a <code>pixel_size</code>-wide block (chunky pixel-art look); with VQGAN it renders a larger image. Higher values use more VRAM.", "number"),
     ]),
     ("Stabilization", [
         ("direct_stabilization_weight", "Keeps the current frame as a direct (pixel-level) image prompt for the next frame. Higher = less flicker but more ghosting. <code>1</code> is a good default. Supports <code>weight_mask</code> syntax.", "weight"),
@@ -186,26 +193,36 @@ HELP_SECTIONS = [
         ("depth_stabilization_weight", "Maintains depth model consistency between frames (3D mode). Prevents depth map flickering. <strong>Steep performance cost</strong> — use sparingly. Supports masks.", "weight"),
         ("edge_stabilization_weight", "Preserves image contours/edges between frames. Reduces shimmer on hard edges. Low performance cost. Supports masks.", "weight"),
         ("flow_stabilization_weight", "Optical flow alignment — warps each frame to match previous motion. Prevents flickering in 3D and Video Source modes. High cost for 3D, slight cost for Video Source.", "weight"),
-        ("flow_long_term_samples", "Number of past frames sampled for flow stabilization. The earliest sampled frame is <code>2^N</code> frames in the past. Higher = more temporal coherence but slower. Default: <code>0</code>.", "number"),
+        ("flow_long_term_samples", "Number of past frames sampled for flow stabilization. The earliest sampled frame is <code>2^N</code> frames in the past. Higher = more temporal coherence but slower. In Video Source mode these frames are reloaded from backups, so <code>backups</code> must be at least <code>2^N + 1</code> (raised automatically).", "number"),
         ("reencode_each_frame", "Re-encode video source frames through the image model each step (Video Source mode). Enabled = higher quality but slower. Disabled = faster, uses raw video frames directly.", "bool"),
     ]),
     ("Audio (Experimental)", [
-        ("input_audio", "Path to a WAV/MP3 file for audioreactive animation. Audio features are extracted and can modulate camera and style parameters via bandpass filters defined in the config.", "path"),
-        ("input_audio_offset", "Offset in seconds into the audio file. Use to sync audio features with a specific point in the animation. Default: <code>0</code>.", "number"),
+        ("input_audio", "Path to a WAV/MP3 file for audioreactive animation. Audio features are extracted through bandpass filters and exposed as variables for motion expressions. The filters are not editable in this UI: add an <code>input_audio_filters</code> list to the preset YAML in <code>config/conf/</code>, otherwise the audio is ignored.", "path"),
+        ("input_audio_offset", "Offset in seconds into the audio file. Use to sync audio features with a specific point in the animation.", "number"),
     ]),
     ("Output", [
-        ("file_namespace", "Subfolder name inside <code>images_out/</code>. Use a unique name per run to keep outputs organized. All frames for a run go in this folder.", "string"),
+        ("file_namespace", "Name for the frame files and their folder. Each render gets its own timestamped folder, <code>app/outputs/&lt;date&gt;/&lt;time&gt;/images_out/&lt;namespace&gt;/</code>, so earlier renders are never overwritten.", "string"),
         ("frames_per_second", "Playback FPS for the final video — also controls how <code>t</code> is scaled in motion expressions. 12–15 for dreamy, 24–30 for smooth.", "number"),
-        ("save_every", "Save a PNG frame every N optimization steps. <strong>0 = auto-match steps_per_frame</strong> (recommended). Set a value manually to override.", "number"),
-        ("display_every", "Update the live preview every N steps. Lower = more frequent updates but slightly slower.", "number"),
-        ("allow_overwrite", "If enabled, existing frames are overwritten on re-run. If disabled, new frames get incremented filenames to avoid data loss.", "bool"),
-        ("backups", "Number of rolling <code>.bak</code> backup files to keep per run. These store image model weights. <code>0</code> = no backups. <code>3</code> is a good default — keeps the last 3 frames' state.", "number"),
-        ("breath_mode", "When enabled, saved frames linearly crossfade from the <code>init_image</code> to the CLIP-optimized output. Frame 1 is nearly 100% the init image; the final frame is 100% optimized. Requires <code>init_image</code> to be set. Works with all animation modes.", "bool"),
+        ("save_every", "Save a PNG frame every N optimization steps. <strong>0 = auto-match steps_per_frame</strong> (recommended). Set a value manually to override. Keep <code>pre_animation_steps</code> a multiple of <code>steps_per_frame</code> so each frame is saved right before the camera moves, when it's most refined.", "number"),
+        ("display_every", "Log losses every N steps. The Latest Frame preview updates whenever a frame is saved (see <code>save_every</code>).", "number"),
+        ("backups", "Number of rolling <code>.bak</code> backup files to keep per run. These store image model weights. <code>0</code> = no backups. Video Source mode reloads earlier frames from these for optical flow and needs at least <code>2^flow_long_term_samples + 1</code>; lower values are raised automatically.", "number"),
+        ("breath_mode", "When enabled, saved frames linearly crossfade from the <code>init_image</code> to the CLIP-optimized output. Frame 1 is nearly 100% the init image; the final frame is 100% optimized. Requires <code>init_image</code> to be set. Works with all animation modes, but looks best with little or no camera motion: the init image stays still while the camera moves.", "bool"),
     ]),
 ]
 
-def _build_help_html():
-    """Generate the full HTML for the help/wiki tab."""
+def _format_default(value) -> str | None:
+    """Render a default.yaml value for the help tab; None for resolver strings like ${now:%f}."""
+    if isinstance(value, str) and value.startswith("${"):
+        return None
+    if value is None or value == "":
+        return "blank"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _build_help_html(defaults: dict):
+    """Generate the full HTML for the help/wiki tab, with defaults taken from default.yaml."""
     type_badges = {
         "string": ("STR", "#5fa8be"),
         "path": ("PATH", "#ff6d00"),
@@ -220,6 +237,11 @@ def _build_help_html():
         rows.append(f'<tr class="wiki-section" data-search="{section.lower()}"><td colspan="3" style="padding:14px 8px 6px; color:#00e5ff; font-size:0.85rem; letter-spacing:0.12em; text-transform:uppercase; border-bottom:1px solid #0d3048;">{section}</td></tr>')
         for name, desc, ftype in fields:
             badge_label, badge_color = type_badges.get(ftype, ("?", "#5fa8be"))
+            shown_default = None
+            if name in defaults and ftype not in ("string", "path"):
+                shown_default = _format_default(defaults[name])
+            if shown_default is not None:
+                desc = f"{desc} Default: <code>{html.escape(shown_default)}</code>."
             rows.append(
                 f'<tr class="wiki-row" data-search="{name.lower()} {section.lower()} {desc.lower()}">'
                 f'<td style="padding:8px; color:#00e5ff; white-space:nowrap; vertical-align:top; width:1%; font-size:0.8rem;">{name}</td>'
@@ -257,8 +279,6 @@ def _build_help_html():
     </div>
     """
 
-_HELP_HTML = _build_help_html()
-
 # ---------------------------------------------------------------------------
 # Paths — all relative to this file so the portable folder can live anywhere
 # ---------------------------------------------------------------------------
@@ -270,12 +290,14 @@ OUTPUTS_DIR = ROOT / "outputs"     # Hydra date hierarchy: outputs/YYYY-MM-DD/HH
 
 # The embedded Python is two levels up from app/ (portable/python/python.exe)
 PORTABLE_ROOT = ROOT.parent
-PYTHON_EXE = PORTABLE_ROOT / "python" / "python.exe"
+EMBEDDED_PYTHON = PORTABLE_ROOT / "python" / "python.exe"
+# Fallback: system Python (for dev use)
+PYTHON_EXE = EMBEDDED_PYTHON if EMBEDDED_PYTHON.exists() else Path(sys.executable)
 
-if not PYTHON_EXE.exists():
-    # Fallback: try system Python (for dev use)
-    import sys
-    PYTHON_EXE = Path(sys.executable)
+# Must match pytti's VQGAN_MODEL_NAMES (pytti/image_models/vqgan.py); any other name crashes the render
+VQGAN_MODELS = ["imagenet", "coco", "wikiart", "sflckr", "openimages"]
+# Presets saved by older versions of this UI may use these names
+_LEGACY_VQGAN_NAMES = {"sflickr": "sflckr"}
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -286,9 +308,10 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def save_yaml(path: Path, data: dict):
+def save_yaml(path: Path, data: dict, header: str = ""):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
+        f.write(header)
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
 
@@ -320,13 +343,15 @@ def merged_config(conf_name: str) -> dict:
 # Render process management
 # ---------------------------------------------------------------------------
 _proc: subprocess.Popen | None = None
+_proc_lock = threading.Lock()     # serializes start/stop with the reader thread's end-of-render bookkeeping
 _log_lines: list[str] = []
 _log_lock = threading.Lock()
 _running = False
 _render_its: float = 0.0          # latest observed it/s from tqdm
 _render_step: int = 0             # current step within tqdm bar
-_render_step_total: int = 0       # total steps in current tqdm bar
 _render_scene: int = 0            # completed scenes count
+_render_dir: Path | None = None   # Hydra run folder of the current (or last) render
+_render_namespace: str = ""       # file_namespace of that render
 _scene_prompt_count: int = 0     # how many "Running prompt:" lines we've seen
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
@@ -334,10 +359,26 @@ _stop_requested: bool = False
 _summary_appended: bool = False
 
 
-_LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
+# DEBUG lines, warnings, and the text pytti's notebook display() prints outside a notebook
+_LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(|^<PIL\.Image\.Image image mode=")
 # Match tqdm output like "  5%|▌         | 500/10000 [00:33<10:30, 15.08it/s]"
 _TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
 _SCENE_RE = re.compile(r"Running prompt:", re.IGNORECASE)
+
+def _render_progress() -> tuple[int, int]:
+    """(total steps, steps done) of the current render, from its config and tqdm progress."""
+    conf = _render_conf or {}
+    num_scenes = max(1, len([s for s in str(conf.get("scenes", "")).split("||") if s.strip()]))
+    steps_per_scene = int(conf.get("steps_per_scene", 10000))
+    return num_scenes * steps_per_scene, _render_scene * steps_per_scene + _render_step
+
+
+def _render_frames() -> list[Path]:
+    """Frames the current (or last) render has saved so far."""
+    if _render_dir is None:
+        return []
+    return list((_render_dir / "images_out" / _render_namespace).glob("*.png"))
+
 
 def _append_summary(label: str):
     """Append render summary to log. Only runs once per render."""
@@ -346,15 +387,8 @@ def _append_summary(label: str):
         return
     _summary_appended = True
     elapsed = time.time() - _render_start if _render_start else 0
-    conf = _render_conf or {}
-    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
-    steps_per_scene = conf.get("steps_per_scene", 10000)
-    total_steps = num_scenes * steps_per_scene
-    done = (_render_scene * steps_per_scene) + _render_step
-    save_every = conf.get("save_every", 0) or conf.get("steps_per_frame", 50)
-    if save_every <= 0:
-        save_every = conf.get("steps_per_frame", 50)
-    frames = done // save_every if save_every > 0 else 0
+    total_steps, done = _render_progress()
+    frames = len(_render_frames())
     avg_sps = done / elapsed if elapsed > 0 else 0
     avg_spf = elapsed / frames if frames > 0 else 0
     lines = [
@@ -374,38 +408,69 @@ def _append_summary(label: str):
         _log_lines.extend(lines)
 
 
-def _stream_output(proc):
-    global _running, _render_its, _render_step, _render_step_total, _render_scene, _scene_prompt_count
-    for line in iter(proc.stdout.readline, ""):
-        # tqdm uses \r to overwrite; keep only the last segment
-        parts = line.split("\r")
-        text = parts[-1].rstrip()
-        clean = _ANSI_ESCAPE.sub("", text)
-        if not clean.strip() or _LOG_NOISE.search(clean):
-            continue
-        # Extract tqdm progress
-        m = _TQDM_RE.search(clean)
-        if m:
-            _render_step = int(m.group(1))
-            _render_step_total = int(m.group(2))
-            rate = float(m.group(3))
-            # tqdm may report "s/it" (slow) or "it/s" (fast)
-            _render_its = (1.0 / rate) if "s/it" in clean else rate
-        # Track scene transitions (pytti logs "Running prompt:" for each scene)
-        if _SCENE_RE.search(clean):
-            _scene_prompt_count += 1
-            # First "Running prompt:" is scene 0 starting; subsequent ones mean prior scene completed
-            _render_scene = max(0, _scene_prompt_count - 1)
-        with _log_lock:
-            _log_lines.append(clean)
-    proc.wait()
-    if not _stop_requested:
-        if proc.returncode == 0:
-            _append_summary("RENDER COMPLETE")
+def _kill_tree(proc: subprocess.Popen):
+    """Stop a render and every process it started (e.g. pytti's ffmpeg video conversion)."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            # TerminateProcess alone would leave child processes running
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10)
         else:
-            _append_summary(f"RENDER ENDED (exit code {proc.returncode})")
-    _running = False
-    _render_its = 0.0
+            os.killpg(proc.pid, signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _stream_output(proc):
+    global _running, _render_its, _render_step, _render_scene, _scene_prompt_count
+    last_progress_idx = -1  # index in _log_lines of the latest tqdm line, if nothing was logged after it
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if proc is not _proc:
+                continue  # output from a stopped render; don't mix it into the current log
+            # Text mode already splits tqdm's \r redraws into separate lines
+            clean = _ANSI_ESCAPE.sub("", line.rstrip())
+            if not clean.strip() or _LOG_NOISE.search(clean):
+                continue
+            # Extract tqdm progress; bars before the first scene are model downloads
+            m = _TQDM_RE.search(clean)
+            if m and _scene_prompt_count:
+                _render_step = int(m.group(1))
+                rate = float(m.group(3))
+                # tqdm may report "s/it" (slow) or "it/s" (fast)
+                _render_its = (1.0 / rate) if "s/it" in clean else rate
+            # Track scene transitions (pytti logs "Running prompt:" for each scene)
+            if _SCENE_RE.search(clean):
+                _scene_prompt_count += 1
+                # First "Running prompt:" is scene 0 starting; subsequent ones mean prior scene completed
+                _render_scene = max(0, _scene_prompt_count - 1)
+            with _log_lock:
+                if m and _log_lines and last_progress_idx == len(_log_lines) - 1:
+                    _log_lines[-1] = clean  # keep one line per progress bar instead of one per redraw
+                else:
+                    _log_lines.append(clean)
+                last_progress_idx = len(_log_lines) - 1 if m else -1
+    except Exception as e:
+        # Nobody would drain the pipe anymore, so the render would stall; stop it instead
+        with _log_lock:
+            _log_lines.append(f"Log reader failed ({e!r}); stopping render.")
+        _kill_tree(proc)
+    finally:
+        proc.wait()
+        with _proc_lock:
+            if proc is _proc:  # a newer render may have started since this one was stopped
+                if not _stop_requested:
+                    if proc.returncode == 0:
+                        _append_summary("RENDER COMPLETE")
+                    else:
+                        _append_summary(f"RENDER ENDED (exit code {proc.returncode})")
+                _running = False
+                _render_its = 0.0
 
 
 def _format_eta(seconds: float) -> str:
@@ -423,12 +488,7 @@ def _get_eta() -> str:
     """Calculate and return an ETA string based on observed it/s and config."""
     if not _running or _render_its <= 0:
         return ""
-    conf = _render_conf or {}
-    num_scenes = max(1, len([s for s in conf.get("scenes", "").split("||") if s.strip()]))
-    steps_per_scene = conf.get("steps_per_scene", 10000)
-    total_steps = num_scenes * steps_per_scene
-    # Steps completed so far: completed scenes + current bar progress
-    done = (_render_scene * steps_per_scene) + _render_step
+    total_steps, done = _render_progress()
     remaining = max(0, total_steps - done)
     if remaining == 0:
         return "ETA: finishing..."
@@ -436,37 +496,96 @@ def _get_eta() -> str:
     return f"ETA: ~{_format_eta(eta_sec)} remaining ({_render_its:.1f} it/s, {done}/{total_steps} steps)"
 
 
+def _ffmpeg_exe() -> str | None:
+    """Find ffmpeg: the one on PATH, else the copy bundled with imageio-ffmpeg.
+
+    In the portable install the bundled binary is copied next to python.exe as
+    ffmpeg.exe, so pytti's own bare "ffmpeg" calls (Video Source conversion) find it too.
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    local = EMBEDDED_PYTHON.parent / "ffmpeg.exe"
+    if local.exists():
+        return str(local)
+    try:
+        import imageio_ffmpeg
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+    if PYTHON_EXE == EMBEDDED_PYTHON:
+        try:
+            shutil.copy2(bundled, local)
+            return str(local)
+        except OSError:
+            pass
+    return bundled
+
+
+def _new_run_dir() -> Path:
+    """A fresh outputs/<date>/<time> folder name, the layout Hydra uses by default."""
+    base = OUTPUTS_DIR / time.strftime("%Y-%m-%d") / time.strftime("%H-%M-%S")
+    run_dir, n = base, 1
+    while run_dir.exists():  # two renders started within the same second
+        n += 1
+        run_dir = base.with_name(f"{base.name}-{n}")
+    return run_dir
+
+
 def start_render(conf_name: str):
-    global _proc, _running, _render_its, _render_step, _render_step_total, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended
-    if _running:
-        return "Already running."
-    with _log_lock:
-        _log_lines.clear()
-    _running = True
-    _stop_requested = False
-    _summary_appended = False
-    _render_its = 0.0
-    _render_step = 0
-    _render_step_total = 0
-    _render_scene = 0
-    _scene_prompt_count = 0
-    _render_start = time.time()
-    # Snapshot config for ETA calculations
-    name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
-    _render_conf = load_conf(name) if (CONF_DIR / name).exists() else {}
-    conf_name = conf_name.removesuffix(".yaml")
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    _proc = subprocess.Popen(
-        [str(PYTHON_EXE), "-W", "ignore", "-m", "pytti.workhorse", f"conf='{conf_name}'"],
-        cwd=str(ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    t = threading.Thread(target=_stream_output, args=(_proc,), daemon=True)
-    t.start()
+    global _proc, _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended, _render_dir, _render_namespace
+    with _proc_lock:
+        if _running:
+            return "Already running."
+        with _log_lock:
+            _log_lines.clear()
+        _stop_requested = False
+        _summary_appended = False
+        _render_its = 0.0
+        _render_step = 0
+        _render_scene = 0
+        _scene_prompt_count = 0
+        _render_start = time.time()
+        # Snapshot config for ETA calculations
+        name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
+        _render_conf = load_conf(name) if (CONF_DIR / name).exists() else {}
+        conf_name = conf_name.removesuffix(".yaml")
+        # Choose the run folder ourselves so the preview and summary know where frames go
+        _render_dir = _new_run_dir()
+        _render_namespace = str(_render_conf.get("file_namespace") or load_defaults().get("file_namespace", ""))
+        overrides = [f"conf='{conf_name}'", f"hydra.run.dir='{_render_dir.relative_to(ROOT).as_posix()}'"]
+        seed = _render_conf.get("seed")
+        if re.fullmatch(r"-?\d+", str(seed)):
+            seed_note = f"Seed: {seed}"
+        else:
+            # Pick the random seed here so it can be shown and reused
+            seed = random.randint(0, 2**32 - 1)
+            overrides.append(f"seed={seed}")
+            seed_note = f"Seed: {seed} (random; enter it as the Seed to repeat this render)"
+        with _log_lock:
+            _log_lines.append(seed_note)
+        # UTF-8 output so the pipe decodes the same way whatever the Windows code page;
+        # INFO level drops pytti's per-step DEBUG output
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "LOGURU_LEVEL": "INFO"}
+        ffmpeg = _ffmpeg_exe()
+        if ffmpeg and Path(ffmpeg).stem.lower() == "ffmpeg":
+            env["PATH"] = str(Path(ffmpeg).parent) + os.pathsep + env.get("PATH", "")
+        try:
+            _proc = subprocess.Popen(
+                [str(PYTHON_EXE), "-W", "ignore", "-m", "pytti.workhorse", *overrides],
+                cwd=str(ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                start_new_session=os.name != "nt",  # lets _kill_tree signal the whole group
+            )
+        except OSError as e:
+            return f"Could not start render: {e}"
+        _running = True
+        threading.Thread(target=_stream_output, args=(_proc,), daemon=True).start()
     return "Render started."
 
 
@@ -487,11 +606,26 @@ def get_encodable_runs():
             for ns_dir in sorted(images_out.iterdir()):
                 if not ns_dir.is_dir():
                     continue
-                pngs = list(ns_dir.glob("*.png"))
-                if pngs:
-                    label = f"{day_dir.name}/{time_dir.name} ({ns_dir.name}) — {len(pngs)} frames"
+                frames = sum(1 for entry in os.scandir(ns_dir) if entry.name.endswith(".png"))
+                if frames:
+                    label = f"{day_dir.name}/{time_dir.name} ({ns_dir.name}) — {frames} frames"
                     runs.append((label, str(ns_dir)))
     return runs
+
+
+def run_fps(frames_dir: str):
+    """frames_per_second a run was rendered with, from the config Hydra saved in its folder."""
+    config = Path(frames_dir).parent.parent / ".hydra" / "config.yaml"
+    try:
+        return _num(load_yaml(config).get("frames_per_second"), None)
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def _frame_number(path: Path):
+    """Sort key: frame number, so unpadded names (frame_10.png after frame_9.png) order correctly too."""
+    m = re.search(r"(\d+)\.png$", path.name)
+    return (int(m.group(1)) if m else -1, path.name)
 
 
 def encode_video(frames_dir: str, fps: int, fmt: str):
@@ -499,78 +633,95 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
     if not frames_dir:
         return "Select a run first."
     frames_path = Path(frames_dir)
-    if not frames_path.exists():
+    if not frames_path.is_dir():
         return f"Directory not found: {frames_dir}"
-
-    # Find the frame pattern and count
-    pngs = sorted(frames_path.glob("*.png"))
+    pngs = sorted(frames_path.glob("*.png"), key=_frame_number)
     if not pngs:
         return "No PNG frames found."
-
-    # Detect naming pattern from first file (e.g. default_0001.png or default_1.png)
-    first = pngs[0].name
-    m = re.match(r"^(.+_)(\d+)\.png$", first)
-    if not m:
-        return f"Cannot parse frame naming pattern from: {first}"
-    prefix = m.group(1)
-    digits = len(m.group(2))
-    # Use zero-padded format if frames are padded (e.g. %04d), otherwise %d
-    num_fmt = f"%0{digits}d" if digits > 1 else "%d"
-    pattern = str(frames_path / f"{prefix}{num_fmt}.png")
-
-    # Find start number
-    numbers = []
-    for p in pngs:
-        nm = re.search(r"_(\d+)\.png$", p.name)
-        if nm:
-            numbers.append(int(nm.group(1)))
-    start_num = min(numbers) if numbers else 1
+    if not fps or fps < 1:
+        return "Set FPS to at least 1."
+    fps = int(fps)
 
     # Output path
     run_dir = frames_path.parent.parent  # up from images_out/namespace/
     if fmt == "ProRes 4444 (MOV)":
-        ext = ".mov"
+        suffix = "_prores4444.mov"
         codec_args = ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le"]
     elif fmt == "ProRes HQ (MOV)":
-        ext = ".mov"
+        suffix = "_proreshq.mov"
         codec_args = ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]
     else:  # MP4
-        ext = ".mp4"
-        codec_args = ["-c:v", "libx264", "-crf", "17", "-preset", "slow", "-pix_fmt", "yuv420p"]
+        suffix = ".mp4"
+        # yuv420p needs even dimensions; pad odd sizes by one pixel
+        codec_args = ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                      "-c:v", "libx264", "-crf", "17", "-preset", "slow", "-pix_fmt", "yuv420p"]
 
-    out_file = run_dir / f"{frames_path.name}_{fps}fps{ext}"
+    out_file = run_dir / f"{frames_path.name}_{fps}fps{suffix}"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-start_number", str(start_num),
-        "-i", pattern,
-    ] + codec_args + [str(out_file)]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            return f"ffmpeg error:\n{result.stderr[-500:]}"
-        return f"Encoded {len(pngs)} frames → {out_file.name}\nSaved to: {out_file}"
-    except FileNotFoundError:
+    ffmpeg = _ffmpeg_exe()
+    if not ffmpeg:
         return "ffmpeg not found. Install ffmpeg and ensure it's on your PATH."
-    except subprocess.TimeoutExpired:
-        return "Encoding timed out (>10 minutes)."
+    # Pipe the frames in order rather than using an image-sequence pattern, which stops
+    # at the first gap in the numbering and breaks on '%' in the path
+    cmd = [ffmpeg, "-y", "-f", "image2pipe", "-framerate", str(fps), "-c:v", "png", "-i", "-"]
+    cmd += codec_args + [str(out_file)]
+    deadline = time.time() + max(600, 5 * len(pngs))
+    with tempfile.TemporaryFile() as ffmpeg_log:
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=ffmpeg_log)
+        except OSError:
+            return "ffmpeg not found. Install ffmpeg and ensure it's on your PATH."
+        try:
+            for png in pngs:
+                if time.time() > deadline:
+                    raise subprocess.TimeoutExpired(cmd, 0)
+                proc.stdin.write(png.read_bytes())
+            proc.stdin.close()
+            proc.wait(timeout=max(1.0, deadline - time.time()))
+        except OSError:
+            # ffmpeg quit early and closed the pipe; its log says why
+            with contextlib.suppress(OSError):
+                proc.stdin.close()
+            proc.wait()
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            out_file.unlink(missing_ok=True)
+            return "Encoding timed out."
+        ffmpeg_log.seek(0)
+        stderr = ffmpeg_log.read().decode("utf-8", "replace")
+    if proc.returncode != 0:
+        out_file.unlink(missing_ok=True)
+        return f"ffmpeg error:\n{_ffmpeg_error(stderr)}"
+    return f"Encoded {len(pngs)} frames → {out_file.name}\nSaved to: {out_file}"
+
+
+def _ffmpeg_error(stderr: str) -> str:
+    """Pick the lines that explain an ffmpeg failure; the tail alone is often just its banner."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    errors = [line for line in lines
+              if re.search(r"error|invalid|not divisible|no such file|could not|unable|failed", line, re.I)]
+    return "\n".join((errors or lines)[-8:])
 
 
 def stop_render():
-    global _proc, _running, _stop_requested
-    if _proc and _running:
+    global _running, _stop_requested
+    with _proc_lock:
+        proc = _proc
+        if not (proc and _running):
+            return "No render running."
         _stop_requested = True
         _append_summary("RENDER STOPPED")
         _running = False
-        _proc.terminate()
-        try:
-            _proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _proc.kill()
-        return "Render stopped."
-    return "No render running."
+        _kill_tree(proc)
+    return "Render stopped."
+
+
+@atexit.register
+def _stop_render_on_exit():
+    # Once the UI exits nothing drains the render's output, so it would stall; end it too
+    if _proc and _proc.poll() is None:
+        _kill_tree(_proc)
 
 
 def get_log():
@@ -578,15 +729,23 @@ def get_log():
         return "\n".join(_log_lines[-200:])
 
 
+def _latest_run_frames(namespace: str) -> list[Path]:
+    """Frames of the newest run under outputs/ that used this namespace."""
+    if not namespace or not OUTPUTS_DIR.is_dir():
+        return []
+    for day_dir in sorted(OUTPUTS_DIR.iterdir(), reverse=True):
+        if day_dir.is_dir():
+            for run_dir in sorted(day_dir.iterdir(), reverse=True):
+                frames = list((run_dir / "images_out" / namespace).glob("*.png"))
+                if frames:
+                    return frames
+    return []
+
+
 def get_latest_frame(namespace: str):
-    """Find the most recent PNG for the given namespace without scanning the entire tree."""
-    if not namespace:
-        return None
-    # Look for namespace dirs directly: outputs/**/images_out/<namespace>/*.png
-    candidates = list(OUTPUTS_DIR.glob(f"**/images_out/{namespace}/*.png"))
-    if not candidates:
-        return None
-    return str(max(candidates, key=lambda p: p.stat().st_mtime))
+    """Newest frame of the current (or last) render; before any render, of the newest run using namespace."""
+    frames = _render_frames() if _render_dir is not None else _latest_run_frames(namespace)
+    return str(max(frames, key=lambda p: p.stat().st_mtime)) if frames else None
 
 
 
@@ -618,6 +777,48 @@ def _clean_prompt_field(text, leading_pipe=False, trailing_pipe=False):
     return cleaned
 
 
+def _clean_path(text: str) -> str:
+    """Strip "Copy as path" quotes and make relative paths absolute.
+
+    pytti opens these files after Hydra has changed into outputs/<date>/<time>/,
+    so a relative path would never be found there.
+    """
+    path = text.strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "\"'":
+        path = path[1:-1].strip()
+    if not path or "://" in path or Path(path).is_absolute():
+        return path
+    for base in (PORTABLE_ROOT, ROOT):
+        if (base / path).exists():
+            return str((base / path).resolve())
+    return path
+
+
+def _clean_image_prompts(text: str) -> str:
+    """Apply _clean_path to the image of each | separated prompt, keeping its :weight_mask suffix."""
+    prompts = []
+    for prompt in text.split("|"):
+        # Same split pytti uses: a colon followed by a slash or backslash is part of the path
+        image, *weight = re.split(r":(?![\\/])", prompt.strip(), maxsplit=1)
+        if image:
+            prompts.append(":".join([_clean_path(image)] + weight))
+    return " | ".join(prompts)
+
+
+def _clean_scenes(text: str) -> str:
+    """Collapse whitespace and drop empty scenes, which pytti would still run as scenes."""
+    return " || ".join(" ".join(scene.split()) for scene in text.split("||") if scene.strip())
+
+
+RANDOM_SEED = "${now:%f}"  # resolved by Hydra when the render starts; see _render_args
+
+
+def _seed_value(text) -> int | str:
+    """A whole-number seed, or RANDOM_SEED when the field is blank."""
+    text = str(text).strip()
+    return int(text) if re.fullmatch(r"-?\d+", text) else RANDOM_SEED
+
+
 def build_conf_dict(
     scenes, scene_prefix, scene_suffix,
     direct_image_prompts, init_image, direct_init_weight, semantic_init_weight,
@@ -632,7 +833,7 @@ def build_conf_dict(
     ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16, RN50x64,
     palette_size, palettes, pixel_size, gamma, hdr_weight, palette_normalization_weight,
     random_initial_palette, lock_palette, target_palette,
-    frames_per_second, save_every, display_every, file_namespace, allow_overwrite, backups,
+    frames_per_second, save_every, display_every, file_namespace, backups,
     field_of_view, near_plane, far_plane,
     gradient_accumulation_steps, smoothing_weight,
     direct_stabilization_weight, semantic_stabilization_weight,
@@ -642,17 +843,17 @@ def build_conf_dict(
     breath_mode,
 ):
     return {
-        "scenes": " ".join(scenes.split()),
+        "scenes": _clean_scenes(scenes),
         "scene_prefix": _clean_prompt_field(scene_prefix, trailing_pipe=True),
         "scene_suffix": _clean_prompt_field(scene_suffix, leading_pipe=True),
-        "direct_image_prompts": direct_image_prompts.strip().strip("\"'()"),
-        "init_image": init_image.strip().strip("\"'()"),
+        "direct_image_prompts": _clean_image_prompts(direct_image_prompts),
+        "init_image": _clean_path(init_image),
         "direct_init_weight": direct_init_weight,
         "semantic_init_weight": semantic_init_weight,
         "image_model": image_model,
         "vqgan_model": vqgan_model,
         "animation_mode": animation_mode,
-        "video_path": video_path.strip().strip("\"'()"),
+        "video_path": _clean_path(video_path),
         "frame_stride": int(frame_stride),
         "width": int(width),
         "height": int(height),
@@ -671,8 +872,8 @@ def build_conf_dict(
         "cutouts": int(cutouts),
         "cut_pow": float(cut_pow),
         "cutout_border": float(cutout_border),
-        "learning_rate": float(learning_rate) if learning_rate else None,
-        "seed": int(seed) if str(seed).strip().isdigit() else random.randint(0, 2**32 - 1),
+        "learning_rate": float(learning_rate) if str(learning_rate or "").strip() else None,
+        "seed": _seed_value(seed),
         "reset_lr_each_frame": reset_lr_each_frame,
         "border_mode": border_mode,
         "sampling_mode": sampling_mode,
@@ -694,12 +895,11 @@ def build_conf_dict(
         "palette_normalization_weight": float(palette_normalization_weight),
         "random_initial_palette": random_initial_palette,
         "lock_palette": lock_palette,
-        "target_palette": target_palette.strip().strip("\"'()"),
+        "target_palette": _clean_path(target_palette),
         "frames_per_second": int(frames_per_second),
         "save_every": int(save_every),
         "display_every": int(display_every),
         "file_namespace": file_namespace,
-        "allow_overwrite": allow_overwrite,
         "backups": int(backups),
         "field_of_view": int(field_of_view),
         "near_plane": int(near_plane),
@@ -712,11 +912,115 @@ def build_conf_dict(
         "edge_stabilization_weight": edge_stabilization_weight,
         "flow_stabilization_weight": flow_stabilization_weight,
         "reencode_each_frame": reencode_each_frame,
-        "input_audio": input_audio.strip().strip("\"'()"),
+        "input_audio": _clean_path(input_audio),
         "input_audio_offset": float(input_audio_offset),
         "flow_long_term_samples": int(flow_long_term_samples),
         "breath_mode": breath_mode,
     }
+
+
+# Preset keys the UI has widgets for, in build_conf_dict's order; any other key in a
+# preset is kept as-is on save
+CONF_FIELDS = tuple(inspect.signature(build_conf_dict).parameters)
+CONF_KEYS = frozenset(CONF_FIELDS)
+
+# Letters, digits, space, - _ . (no quotes or path separators, which would break the
+# conf='<name>' override or write outside config/conf); a leading _ hides it from the list
+_CONF_NAME_RE = re.compile(r"[^\W_](?:[\w .-]*[\w-])?")
+
+
+def conf_problems(name: str, values: dict, labels: dict) -> list[str]:
+    """Settings that can't be saved or would crash pytti, worded for the status box."""
+    problems = []
+    if not name:
+        problems.append("Enter a config name first.")
+    elif not _CONF_NAME_RE.fullmatch(name.removesuffix(".yaml")):
+        problems.append("Config names can use letters, numbers, spaces, - _ and . and must start with a letter or number.")
+    empty = [labels[key] for key, value in values.items() if value is None]
+    if empty:
+        problems.append("Fill in: " + ", ".join(empty) + ".")
+    seed = str(values["seed"]).strip()
+    if seed and not re.fullmatch(r"-?\d+", seed):
+        problems.append("Seed must be a whole number, or blank for random.")
+    try:
+        float(str(values["learning_rate"]).strip() or 0)
+    except ValueError:
+        problems.append("Learning Rate must be a number, or blank for auto.")
+    for key in ("steps_per_frame", "frames_per_second", "gradient_accumulation_steps"):
+        if values[key] is not None and values[key] < 1:
+            problems.append(f"{labels[key]} must be at least 1.")
+    cutouts, accumulation = values["cutouts"], values["gradient_accumulation_steps"]
+    if cutouts is not None and accumulation and int(cutouts) % int(accumulation):
+        problems.append(f"{labels['cutouts']} ({int(cutouts)}) must be divisible by {labels['gradient_accumulation_steps']} ({int(accumulation)}).")
+    return problems
+
+
+def _conf_notes(data: dict) -> list[str]:
+    """Fix settings pytti can't run with and explain anything that won't behave as expected."""
+    notes = []
+    flow_samples = int(data.get("flow_long_term_samples") or 0)
+    if data.get("animation_mode") == "Video Source" and flow_samples > 0:
+        # Long-term optical flow reloads the frame 2^N back from the rolling .bak files
+        data["backups"] = max(int(data.get("backups") or 0), 2 ** flow_samples + 1)
+    spf, pre = int(data["steps_per_frame"]), int(data["pre_animation_steps"])
+    if data.get("animation_mode") != "off" and int(data.get("save_every") or 0) <= 0 and spf > 0 and pre % spf:
+        # Frames are saved every steps_per_frame steps from step 0, camera moves start at pre_animation_steps
+        notes.append(f"Tip: make Pre-animation Steps a multiple of Steps per Frame ({spf}) so each frame is saved fully refined.")
+    if data.get("input_audio") and not (data.get("input_audio_filters") or load_defaults().get("input_audio_filters")):
+        notes.append("Input audio is ignored until input_audio_filters are added to the preset YAML.")
+    return notes
+
+
+def write_conf(name: str, extras: dict | None, values: dict) -> tuple[str, list[str]]:
+    """Save the UI fields to conf/<name>.yaml without dropping keys the UI has no widget for.
+
+    Those keys (e.g. input_audio_filters) come from the existing file, or, when saving
+    under a new name, from the preset that was last loaded.
+    """
+    filename = name if name.endswith(".yaml") else name + ".yaml"
+    path = CONF_DIR / filename
+    data = load_yaml(path) if path.exists() else dict(extras or {})
+    data.update(build_conf_dict(**values))
+    notes = _conf_notes(data)
+    save_yaml(path, data, header="# @package _global_\n")
+    return filename, notes
+
+
+def _text_value(key: str, value) -> str:
+    """How a preset value is shown in its textbox."""
+    if key in ("scenes", "scene_prefix", "scene_suffix"):
+        return " ".join(str(value or "").split())
+    if key == "seed":
+        return "" if value is None or str(value).startswith("${") else str(value)
+    if key == "learning_rate" or key.endswith("_weight"):
+        return str(value or "")  # 0 and blank both mean auto / off
+    return "" if value is None else str(value)
+
+
+def _ui_value(key: str, widget, value, default):
+    """Convert a preset value to what its widget shows."""
+    if isinstance(widget, gr.Number):
+        return _num(value, _num(default, None))
+    if isinstance(widget, gr.Checkbox):
+        return bool(value)
+    if isinstance(widget, gr.Dropdown):
+        if key == "animation_mode" and value is False:  # YAML reads a bare `off` as False
+            return "off"
+        return _LEGACY_VQGAN_NAMES.get(value, value) if key == "vqgan_model" else value
+    return _text_value(key, value)
+
+
+_REFERENCE = re.compile(r"\$\{(\w+)\}")
+
+
+def _resolve_references(data: dict) -> dict:
+    """Replace plain ${key} references (e.g. save_every: ${steps_per_frame}) with the referenced value."""
+    def resolve(value, seen):
+        match = _REFERENCE.fullmatch(value) if isinstance(value, str) else None
+        if match and match.group(1) in data and match.group(1) not in seen:
+            return resolve(data[match.group(1)], seen | {match.group(1)})
+        return value
+    return {key: resolve(value, {key}) for key, value in data.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -888,26 +1192,20 @@ _THEME = gr.themes.Base(primary_hue="cyan", neutral_hue="slate").set(
 
 def make_ui():
     cfg = load_defaults()
+    # Serve preview frames straight from outputs/ instead of copying each into Gradio's temp cache
+    gr.set_static_paths([str(OUTPUTS_DIR)])
 
-    _AUTO_SCROLL_JS = """
-    () => {
-        const obs = new MutationObserver(() => {
-            const el = document.querySelector('#log-box textarea');
-            if (el) el.scrollTop = el.scrollHeight;
-        });
-        const target = document.getElementById('log-box');
-        if (target) obs.observe(target, {childList: true, subtree: true, characterData: true});
-    }
-    """
-    with gr.Blocks(title="PyTTI", theme=_THEME, css=_THEME_CSS, js=_AUTO_SCROLL_JS) as demo:
-        gr.HTML("""
+    # The log box relies on gr.Textbox's built-in autoscroll, which stops following when the user scrolls up
+    with gr.Blocks(title="PyTTI", theme=_THEME, css=_THEME_CSS) as demo:
+        version, _, stage = __version__.partition("-")
+        gr.HTML(f"""
         <div style="display:flex; align-items:baseline; justify-content:space-between; padding:12px 0 4px; border-bottom:1px solid #0d3048; margin-bottom:16px;">
             <div>
                 <span style="font-family:'Share Tech Mono',monospace; font-size:1.6rem; color:#00e5ff; letter-spacing:0.2em; text-transform:uppercase;">PyTTI</span>
-                <span style="font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#ff6d00; letter-spacing:0.1em; margin-left:8px; vertical-align:super;">BETA</span>
+                <span style="font-family:'Share Tech Mono',monospace; font-size:0.55rem; color:#ff6d00; letter-spacing:0.1em; margin-left:8px; vertical-align:super;">{stage.upper()}</span>
                 <span style="font-family:'Share Tech Mono',monospace; font-size:0.7rem; color:#5fa8be; letter-spacing:0.15em; margin-left:16px;">NEURAL IMAGE SYNTHESIZER</span>
             </div>
-            <span style="font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#5fa8be; letter-spacing:0.1em;">v1.0.0</span>
+            <span style="font-family:'Share Tech Mono',monospace; font-size:0.6rem; color:#5fa8be; letter-spacing:0.1em;">v{version}</span>
         </div>
         """)
         with gr.Tabs():
@@ -916,17 +1214,17 @@ def make_ui():
             # TAB: Prompts
             # ----------------------------------------------------------------
             with gr.Tab("Prompts"):
-                scenes = gr.Textbox(label="Scenes", value=cfg.get("scenes", ""), lines=4,
-                                    placeholder="A beautiful landscape | A surreal dreamscape",
+                scenes = gr.Textbox(label="Scenes", value=_text_value("scenes", cfg.get("scenes")), lines=4,
+                                    placeholder="A misty forest | volumetric light || A surreal dreamscape",
                                     info=TIPS["scenes"])
-                scene_prefix = gr.Textbox(label="Scene Prefix", value=cfg.get("scene_prefix", ""), lines=2, info=TIPS["scene_prefix"])
-                scene_suffix = gr.Textbox(label="Scene Suffix", value=cfg.get("scene_suffix", ""), lines=2, info=TIPS["scene_suffix"])
+                scene_prefix = gr.Textbox(label="Scene Prefix", value=_text_value("scene_prefix", cfg.get("scene_prefix")), lines=2, info=TIPS["scene_prefix"])
+                scene_suffix = gr.Textbox(label="Scene Suffix", value=_text_value("scene_suffix", cfg.get("scene_suffix")), lines=2, info=TIPS["scene_suffix"])
                 with gr.Row():
-                    direct_image_prompts = gr.Textbox(label="Direct Image Prompts", value=cfg.get("direct_image_prompts", ""), info=TIPS["direct_image_prompts"])
-                    init_image = gr.Textbox(label="Init Image Path", value=cfg.get("init_image", ""), info=TIPS["init_image"])
+                    direct_image_prompts = gr.Textbox(label="Direct Image Prompts", value=_text_value("direct_image_prompts", cfg.get("direct_image_prompts")), info=TIPS["direct_image_prompts"])
+                    init_image = gr.Textbox(label="Init Image Path", value=_text_value("init_image", cfg.get("init_image")), info=TIPS["init_image"])
                 with gr.Row():
-                    direct_init_weight = gr.Textbox(label="Direct Init Weight", value=str(cfg.get("direct_init_weight", "")), info=TIPS["direct_init_weight"])
-                    semantic_init_weight = gr.Textbox(label="Semantic Init Weight", value=str(cfg.get("semantic_init_weight", "")), info=TIPS["semantic_init_weight"])
+                    direct_init_weight = gr.Textbox(label="Direct Init Weight", value=_text_value("direct_init_weight", cfg.get("direct_init_weight")), info=TIPS["direct_init_weight"])
+                    semantic_init_weight = gr.Textbox(label="Semantic Init Weight", value=_text_value("semantic_init_weight", cfg.get("semantic_init_weight")), info=TIPS["semantic_init_weight"])
 
             # ----------------------------------------------------------------
             # TAB: Image & Animation
@@ -934,122 +1232,121 @@ def make_ui():
             with gr.Tab("Image & Animation"):
                 # — Model & Mode —
                 with gr.Row():
-                    image_model    = gr.Dropdown(label="Image Model",    choices=["Limited Palette", "Unlimited Palette", "VQGAN"],        value=cfg.get("image_model", "Limited Palette"), info=TIPS["image_model"],    scale=2)
-                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=["sflickr", "imagenet", "coco", "wikiart", "openimages", "faceshq"], value=cfg.get("vqgan_model", "coco"),          info=TIPS["vqgan_model"],    scale=2)
-                    animation_mode = gr.Dropdown(label="Animation Mode", choices=["off", "Video Source", "2D", "3D"],                      value=cfg.get("animation_mode", "3D"),           info=TIPS["animation_mode"], scale=1)
+                    image_model    = gr.Dropdown(label="Image Model",    choices=["Limited Palette", "Unlimited Palette", "VQGAN"],        value=cfg.get("image_model"), info=TIPS["image_model"],    scale=2)
+                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=VQGAN_MODELS, value=cfg.get("vqgan_model"),          info=TIPS["vqgan_model"],    scale=2)
+                    animation_mode = gr.Dropdown(label="Animation Mode", choices=["off", "Video Source", "2D", "3D"],                      value=cfg.get("animation_mode"),           info=TIPS["animation_mode"], scale=1)
 
                 # — Dimensions & Video —
                 with gr.Row():
-                    width        = gr.Number(label="Width",        value=cfg.get("width", 512),         precision=0, info=TIPS["width"],        scale=1)
-                    height       = gr.Number(label="Height",       value=cfg.get("height", 512),        precision=0, info=TIPS["height"],       scale=1)
-                    frame_stride = gr.Number(label="Frame Stride", value=cfg.get("frame_stride", 1),    precision=0, info=TIPS["frame_stride"], scale=1)
-                video_path = gr.Textbox(label="Video Path (Video Source mode)", value=cfg.get("video_path", ""), info=TIPS["video_path"])
+                    width        = gr.Number(label="Width",        value=cfg.get("width"),         precision=0, info=TIPS["width"],        scale=1)
+                    height       = gr.Number(label="Height",       value=cfg.get("height"),        precision=0, info=TIPS["height"],       scale=1)
+                    frame_stride = gr.Number(label="Frame Stride", value=cfg.get("frame_stride"),    precision=0, info=TIPS["frame_stride"], scale=1)
+                video_path = gr.Textbox(label="Video Path (Video Source mode)", value=_text_value("video_path", cfg.get("video_path")), info=TIPS["video_path"])
 
                 # — Camera Transforms —
                 gr.Markdown("### Camera Transforms")
                 with gr.Row():
-                    translate_x   = gr.Textbox(label="Translate X",     value=str(cfg.get("translate_x",   "0")), info=TIPS["translate_x"])
-                    translate_y   = gr.Textbox(label="Translate Y",     value=str(cfg.get("translate_y",   "0")), info=TIPS["translate_y"])
-                    translate_z_3d = gr.Textbox(label="Translate Z (3D)", value=str(cfg.get("translate_z_3d", "0")), info=TIPS["translate_z_3d"])
+                    translate_x   = gr.Textbox(label="Translate X",     value=_text_value("translate_x", cfg.get("translate_x")), info=TIPS["translate_x"])
+                    translate_y   = gr.Textbox(label="Translate Y",     value=_text_value("translate_y", cfg.get("translate_y")), info=TIPS["translate_y"])
+                    translate_z_3d = gr.Textbox(label="Translate Z (3D)", value=_text_value("translate_z_3d", cfg.get("translate_z_3d")), info=TIPS["translate_z_3d"])
                 with gr.Row():
-                    rotate_3d  = gr.Textbox(label="Rotate 3D",   value=str(cfg.get("rotate_3d", "[1, 0, 0, 0]")), info=TIPS["rotate_3d"],  scale=3)
-                    rotate_2d  = gr.Textbox(label="Rotate 2D",   value=str(cfg.get("rotate_2d", "0")),             info=TIPS["rotate_2d"],  scale=1)
-                    zoom_x_2d  = gr.Textbox(label="Zoom X (2D)", value=str(cfg.get("zoom_x_2d", "0")),             info=TIPS["zoom_x_2d"], scale=1)
-                    zoom_y_2d  = gr.Textbox(label="Zoom Y (2D)", value=str(cfg.get("zoom_y_2d", "0")),             info=TIPS["zoom_y_2d"], scale=1)
+                    rotate_3d  = gr.Textbox(label="Rotate 3D",   value=_text_value("rotate_3d", cfg.get("rotate_3d")), info=TIPS["rotate_3d"],  scale=3)
+                    rotate_2d  = gr.Textbox(label="Rotate 2D",   value=_text_value("rotate_2d", cfg.get("rotate_2d")),             info=TIPS["rotate_2d"],  scale=1)
+                    zoom_x_2d  = gr.Textbox(label="Zoom X (2D)", value=_text_value("zoom_x_2d", cfg.get("zoom_x_2d")),             info=TIPS["zoom_x_2d"], scale=1)
+                    zoom_y_2d  = gr.Textbox(label="Zoom Y (2D)", value=_text_value("zoom_y_2d", cfg.get("zoom_y_2d")),             info=TIPS["zoom_y_2d"], scale=1)
                 with gr.Row():
-                    lock_camera  = gr.Checkbox(label="Lock Camera", value=cfg.get("lock_camera", True), info=TIPS["lock_camera"], scale=0)
-                    field_of_view = gr.Number(label="Field of View", value=cfg.get("field_of_view", 60),    precision=0, info=TIPS["field_of_view"], scale=1)
-                    near_plane    = gr.Number(label="Near Plane",    value=cfg.get("near_plane", 2000),     precision=0, info=TIPS["near_plane"],    scale=1)
-                    far_plane     = gr.Number(label="Far Plane",     value=cfg.get("far_plane", 12500),     precision=0, info=TIPS["far_plane"],     scale=1)
+                    lock_camera  = gr.Checkbox(label="Lock Camera", value=cfg.get("lock_camera"), info=TIPS["lock_camera"], scale=0)
+                    field_of_view = gr.Number(label="Field of View", value=cfg.get("field_of_view"),    precision=0, info=TIPS["field_of_view"], scale=1)
+                    near_plane    = gr.Number(label="Near Plane",    value=cfg.get("near_plane"),     precision=0, info=TIPS["near_plane"],    scale=1)
+                    far_plane     = gr.Number(label="Far Plane",     value=cfg.get("far_plane"),     precision=0, info=TIPS["far_plane"],     scale=1)
 
                 # — Edge Handling —
                 with gr.Row():
-                    border_mode   = gr.Dropdown(label="Border Mode",   choices=["clamp", "mirror", "wrap", "black", "smear"], value=cfg.get("border_mode",   "wrap"),    info=TIPS["border_mode"],   scale=1)
-                    sampling_mode = gr.Dropdown(label="Sampling Mode", choices=["nearest", "bilinear", "bicubic"],            value=cfg.get("sampling_mode", "bicubic"), info=TIPS["sampling_mode"], scale=1)
-                    infill_mode   = gr.Dropdown(label="Infill Mode",   choices=["mirror", "wrap", "black", "smear"],          value=cfg.get("infill_mode",   "wrap"),    info=TIPS["infill_mode"],   scale=1)
+                    border_mode   = gr.Dropdown(label="Border Mode",   choices=["clamp", "mirror", "wrap", "black", "smear"], value=cfg.get("border_mode"),    info=TIPS["border_mode"],   scale=1)
+                    sampling_mode = gr.Dropdown(label="Sampling Mode", choices=["nearest", "bilinear", "bicubic"],            value=cfg.get("sampling_mode"), info=TIPS["sampling_mode"], scale=1)
+                    infill_mode   = gr.Dropdown(label="Infill Mode",   choices=["mirror", "wrap", "black", "smear"],          value=cfg.get("infill_mode"),    info=TIPS["infill_mode"],   scale=1)
 
             # ----------------------------------------------------------------
             # TAB: Steps & CLIP
             # ----------------------------------------------------------------
             with gr.Tab("Steps & CLIP"):
                 with gr.Row():
-                    steps_per_scene = gr.Number(label="Steps per Scene", value=cfg.get("steps_per_scene", 10000), precision=0, info=TIPS["steps_per_scene"])
-                    steps_per_frame = gr.Number(label="Steps per Frame", value=cfg.get("steps_per_frame", 80), precision=0, info=TIPS["steps_per_frame"])
+                    steps_per_scene = gr.Number(label="Steps per Scene", value=cfg.get("steps_per_scene"), precision=0, info=TIPS["steps_per_scene"])
+                    steps_per_frame = gr.Number(label="Steps per Frame", value=cfg.get("steps_per_frame"), precision=0, info=TIPS["steps_per_frame"])
                 with gr.Row():
-                    interpolation_steps = gr.Number(label="Interpolation Steps", value=cfg.get("interpolation_steps", 250), precision=0, info=TIPS["interpolation_steps"])
-                    pre_animation_steps = gr.Number(label="Pre-animation Steps", value=cfg.get("pre_animation_steps", 50), precision=0, info=TIPS["pre_animation_steps"])
+                    interpolation_steps = gr.Number(label="Interpolation Steps", value=cfg.get("interpolation_steps"), precision=0, info=TIPS["interpolation_steps"])
+                    pre_animation_steps = gr.Number(label="Pre-animation Steps", value=cfg.get("pre_animation_steps"), precision=0, info=TIPS["pre_animation_steps"])
                 with gr.Row():
-                    cutouts = gr.Number(label="Cutouts", value=cfg.get("cutouts", 50), precision=0, info=TIPS["cutouts"])
-                    cut_pow = gr.Number(label="Cut Power", value=cfg.get("cut_pow", 2.1), info=TIPS["cut_pow"])
-                    cutout_border = gr.Number(label="Cutout Border", value=cfg.get("cutout_border", 0.25), info="Border width for cutouts. Controls how much padding is added around each cutout.")
+                    cutouts = gr.Number(label="Cutouts", value=cfg.get("cutouts"), precision=0, info=TIPS["cutouts"])
+                    cut_pow = gr.Number(label="Cut Power", value=cfg.get("cut_pow"), info=TIPS["cut_pow"])
+                    cutout_border = gr.Number(label="Cutout Border", value=cfg.get("cutout_border"), info="Border width for cutouts. Controls how much padding is added around each cutout.")
                 with gr.Row():
-                    learning_rate = gr.Textbox(label="Learning Rate (blank = auto)", value=str(cfg.get("learning_rate", "") or ""), info=TIPS["learning_rate"])
-                    seed = gr.Textbox(label="Seed (blank = random)", value=str(cfg.get("seed", "")), info=TIPS["seed"])
-                    reset_lr_each_frame = gr.Checkbox(label="Reset LR Each Frame", value=cfg.get("reset_lr_each_frame", True), info="Reset the learning rate at the start of each frame.")
+                    learning_rate = gr.Textbox(label="Learning Rate (blank = auto)", value=_text_value("learning_rate", cfg.get("learning_rate")), info=TIPS["learning_rate"])
+                    seed = gr.Textbox(label="Seed (blank = random)", value=_text_value("seed", cfg.get("seed")), info=TIPS["seed"])
+                    reset_lr_each_frame = gr.Checkbox(label="Reset LR Each Frame", value=cfg.get("reset_lr_each_frame"), info="Reset the optimizer (Adam momentum) at the start of each frame.")
                 with gr.Row():
-                    gradient_accumulation_steps = gr.Number(label="Gradient Accumulation Steps", value=cfg.get("gradient_accumulation_steps", 2), precision=0, info=TIPS["gradient_accumulation_steps"])
-                    smoothing_weight = gr.Number(label="Smoothing Weight", value=cfg.get("smoothing_weight", 0.02), info="Total variation loss weight — higher values produce smoother images, lower values preserve more detail.")
+                    gradient_accumulation_steps = gr.Number(label="Gradient Accumulation Steps", value=cfg.get("gradient_accumulation_steps"), precision=0, info=TIPS["gradient_accumulation_steps"])
+                    smoothing_weight = gr.Number(label="Smoothing Weight", value=cfg.get("smoothing_weight"), info="Total variation loss weight — higher values produce smoother images, lower values preserve more detail.")
 
                 gr.Markdown("### CLIP Models")
                 with gr.Row():
-                    ViTB32 = gr.Checkbox(label="ViT-B/32", value=cfg.get("ViTB32", True))
-                    ViTB16 = gr.Checkbox(label="ViT-B/16", value=cfg.get("ViTB16", True))
-                    ViTL14 = gr.Checkbox(label="ViT-L/14", value=cfg.get("ViTL14", False))
-                    ViTL14_336px = gr.Checkbox(label="ViT-L/14@336px", value=cfg.get("ViTL14_336px", False))
+                    ViTB32 = gr.Checkbox(label="ViT-B/32", value=cfg.get("ViTB32"))
+                    ViTB16 = gr.Checkbox(label="ViT-B/16", value=cfg.get("ViTB16"))
+                    ViTL14 = gr.Checkbox(label="ViT-L/14", value=cfg.get("ViTL14"))
+                    ViTL14_336px = gr.Checkbox(label="ViT-L/14@336px", value=cfg.get("ViTL14_336px"))
                 with gr.Row():
-                    RN50 = gr.Checkbox(label="RN50", value=cfg.get("RN50", False))
-                    RN101 = gr.Checkbox(label="RN101", value=cfg.get("RN101", False))
-                    RN50x4 = gr.Checkbox(label="RN50x4", value=cfg.get("RN50x4", True))
-                    RN50x16 = gr.Checkbox(label="RN50x16", value=cfg.get("RN50x16", False))
-                    RN50x64 = gr.Checkbox(label="RN50x64", value=cfg.get("RN50x64", False))
+                    RN50 = gr.Checkbox(label="RN50", value=cfg.get("RN50"))
+                    RN101 = gr.Checkbox(label="RN101", value=cfg.get("RN101"))
+                    RN50x4 = gr.Checkbox(label="RN50x4", value=cfg.get("RN50x4"))
+                    RN50x16 = gr.Checkbox(label="RN50x16", value=cfg.get("RN50x16"))
+                    RN50x64 = gr.Checkbox(label="RN50x64", value=cfg.get("RN50x64"))
 
             # ----------------------------------------------------------------
             # TAB: Palette
             # ----------------------------------------------------------------
             with gr.Tab("Palette"):
                 with gr.Row():
-                    palette_size = gr.Number(label="Palette Size", value=cfg.get("palette_size", 50), precision=0, info=TIPS["palette_size"])
-                    palettes = gr.Number(label="Palettes", value=cfg.get("palettes", 18), precision=0, info=TIPS["palettes"])
-                    pixel_size = gr.Number(label="Pixel Size", value=cfg.get("pixel_size", 4), precision=0, info="Size of each pixel block in Limited Palette mode. Higher = more pixelated.")
+                    palette_size = gr.Number(label="Palette Size", value=cfg.get("palette_size"), precision=0, info=TIPS["palette_size"])
+                    palettes = gr.Number(label="Palettes", value=cfg.get("palettes"), precision=0, info=TIPS["palettes"])
+                    pixel_size = gr.Number(label="Pixel Size", value=cfg.get("pixel_size"), precision=0, info="Output scale: frames are saved at width × pixel_size by height × pixel_size. Palette modes get chunky pixels; uses more VRAM.")
                 with gr.Row():
-                    gamma = gr.Number(label="Gamma", value=cfg.get("gamma", 1.5), info=TIPS["gamma"])
-                    hdr_weight = gr.Number(label="HDR Weight", value=cfg.get("hdr_weight", 0.35), info=TIPS["hdr_weight"])
-                    palette_normalization_weight = gr.Number(label="Palette Normalization Weight", value=cfg.get("palette_normalization_weight", 0.75), info=TIPS["palette_normalization_weight"])
+                    gamma = gr.Number(label="Gamma", value=cfg.get("gamma"), info=TIPS["gamma"])
+                    hdr_weight = gr.Number(label="HDR Weight", value=cfg.get("hdr_weight"), info=TIPS["hdr_weight"])
+                    palette_normalization_weight = gr.Number(label="Palette Normalization Weight", value=cfg.get("palette_normalization_weight"), info=TIPS["palette_normalization_weight"])
                 with gr.Row():
-                    random_initial_palette = gr.Checkbox(label="Random Initial Palette", value=cfg.get("random_initial_palette", False), info=TIPS["random_initial_palette"])
-                    lock_palette = gr.Checkbox(label="Lock Palette", value=cfg.get("lock_palette", False), info=TIPS["lock_palette"])
-                target_palette = gr.Textbox(label="Target Palette", value=cfg.get("target_palette", ""), info=TIPS["target_palette"])
+                    random_initial_palette = gr.Checkbox(label="Random Initial Palette", value=cfg.get("random_initial_palette"), info=TIPS["random_initial_palette"])
+                    lock_palette = gr.Checkbox(label="Lock Palette", value=cfg.get("lock_palette"), info=TIPS["lock_palette"])
+                target_palette = gr.Textbox(label="Target Palette", value=_text_value("target_palette", cfg.get("target_palette")), info=TIPS["target_palette"])
 
             # ----------------------------------------------------------------
             # TAB: Stabilization & Audio
             # ----------------------------------------------------------------
             with gr.Tab("Stabilization & Audio"):
                 with gr.Row():
-                    direct_stabilization_weight = gr.Textbox(label="Direct Stabilization Weight", value=str(cfg.get("direct_stabilization_weight", "1")), info=TIPS["direct_stabilization_weight"])
-                    semantic_stabilization_weight = gr.Textbox(label="Semantic Stabilization Weight", value=str(cfg.get("semantic_stabilization_weight", "")), info=TIPS["semantic_stabilization_weight"])
+                    direct_stabilization_weight = gr.Textbox(label="Direct Stabilization Weight", value=_text_value("direct_stabilization_weight", cfg.get("direct_stabilization_weight")), info=TIPS["direct_stabilization_weight"])
+                    semantic_stabilization_weight = gr.Textbox(label="Semantic Stabilization Weight", value=_text_value("semantic_stabilization_weight", cfg.get("semantic_stabilization_weight")), info=TIPS["semantic_stabilization_weight"])
                 with gr.Row():
-                    depth_stabilization_weight = gr.Textbox(label="Depth Stabilization Weight", value=str(cfg.get("depth_stabilization_weight", "")), info=TIPS["depth_stabilization_weight"])
-                    edge_stabilization_weight = gr.Textbox(label="Edge Stabilization Weight", value=str(cfg.get("edge_stabilization_weight", "")), info=TIPS["edge_stabilization_weight"])
-                    flow_stabilization_weight = gr.Textbox(label="Flow Stabilization Weight", value=str(cfg.get("flow_stabilization_weight", "")), info=TIPS["flow_stabilization_weight"])
-                flow_long_term_samples = gr.Number(label="Flow Long-term Samples", value=cfg.get("flow_long_term_samples", 1), precision=0, info=TIPS["flow_long_term_samples"])
-                reencode_each_frame = gr.Checkbox(label="Re-encode Each Frame", value=cfg.get("reencode_each_frame", True), info="Re-encode video frames through the image model each step. Disable for faster but lower quality video mode.")
-                input_audio = gr.Textbox(label="Input Audio Path", value=cfg.get("input_audio", ""), info=TIPS["input_audio"])
-                input_audio_offset = gr.Number(label="Audio Offset (seconds)", value=cfg.get("input_audio_offset", 0), info="Offset in seconds to sync audio with the animation.")
+                    depth_stabilization_weight = gr.Textbox(label="Depth Stabilization Weight", value=_text_value("depth_stabilization_weight", cfg.get("depth_stabilization_weight")), info=TIPS["depth_stabilization_weight"])
+                    edge_stabilization_weight = gr.Textbox(label="Edge Stabilization Weight", value=_text_value("edge_stabilization_weight", cfg.get("edge_stabilization_weight")), info=TIPS["edge_stabilization_weight"])
+                    flow_stabilization_weight = gr.Textbox(label="Flow Stabilization Weight", value=_text_value("flow_stabilization_weight", cfg.get("flow_stabilization_weight")), info=TIPS["flow_stabilization_weight"])
+                flow_long_term_samples = gr.Number(label="Flow Long-term Samples", value=cfg.get("flow_long_term_samples"), precision=0, info=TIPS["flow_long_term_samples"])
+                reencode_each_frame = gr.Checkbox(label="Re-encode Each Frame", value=cfg.get("reencode_each_frame"), info="Re-encode video frames through the image model each step. Disable for faster but lower quality video mode.")
+                input_audio = gr.Textbox(label="Input Audio Path", value=_text_value("input_audio", cfg.get("input_audio")), info=TIPS["input_audio"])
+                input_audio_offset = gr.Number(label="Audio Offset (seconds)", value=cfg.get("input_audio_offset"), info="Offset in seconds to sync audio with the animation.")
 
             # ----------------------------------------------------------------
             # TAB: Output
             # ----------------------------------------------------------------
             with gr.Tab("Output"):
                 with gr.Row():
-                    file_namespace = gr.Textbox(label="File Namespace", value=cfg.get("file_namespace", "default"), info=TIPS["file_namespace"])
-                    frames_per_second = gr.Number(label="FPS", value=cfg.get("frames_per_second", 15), precision=0, info=TIPS["frames_per_second"])
+                    file_namespace = gr.Textbox(label="File Namespace", value=_text_value("file_namespace", cfg.get("file_namespace")), info=TIPS["file_namespace"])
+                    frames_per_second = gr.Number(label="FPS", value=cfg.get("frames_per_second"), precision=0, info=TIPS["frames_per_second"])
                 with gr.Row():
-                    save_every = gr.Number(label="Save Every N Steps", value=cfg.get("save_every", 0), precision=0, info=TIPS["save_every"])
-                    display_every = gr.Number(label="Display Every N Steps", value=cfg.get("display_every", 50), precision=0, info=TIPS["display_every"])
+                    save_every = gr.Number(label="Save Every N Steps", value=cfg.get("save_every"), precision=0, info=TIPS["save_every"])
+                    display_every = gr.Number(label="Display Every N Steps", value=cfg.get("display_every"), precision=0, info=TIPS["display_every"])
                 with gr.Row():
-                    allow_overwrite = gr.Checkbox(label="Allow Overwrite", value=cfg.get("allow_overwrite", True), info=TIPS["allow_overwrite"])
-                    backups = gr.Number(label="Backups", value=cfg.get("backups", 0), precision=0, info="Number of backup copies to keep for each frame. 0 = no backups.")
-                breath_mode = gr.Checkbox(label="Breath Mode", value=cfg.get("breath_mode", False), info=TIPS["breath_mode"])
+                    backups = gr.Number(label="Backups", value=cfg.get("backups"), precision=0, info="Rolling backups of the image model state. 0 = none (Video Source mode needs at least 2^Flow Long-term Samples + 1 and raises it automatically).")
+                    breath_mode = gr.Checkbox(label="Breath Mode", value=cfg.get("breath_mode"), info=TIPS["breath_mode"])
 
                 gr.Markdown("### Encode Video")
                 with gr.Row(equal_height=True):
@@ -1061,7 +1358,7 @@ def make_ui():
                     )
                     encode_refresh_btn = gr.Button("↻", variant="secondary", scale=0, min_width=36, elem_classes=["btn-sm"])
                 with gr.Row():
-                    encode_fps = gr.Number(label="FPS", value=30, precision=0, scale=1, info="Output video frame rate.")
+                    encode_fps = gr.Number(label="FPS", value=cfg.get("frames_per_second"), precision=0, scale=1, info="Output video frame rate. Set to the run's FPS when you pick a run; other values speed up or slow down its motion.")
                     encode_format = gr.Dropdown(
                         label="Format",
                         choices=["MP4 (H.264)", "ProRes 4444 (MOV)", "ProRes HQ (MOV)"],
@@ -1087,6 +1384,9 @@ def make_ui():
                     run_btn = gr.Button("Start Render", variant="primary", scale=2)
                     stop_btn = gr.Button("Stop Render", variant="stop", scale=1)
                 status_box = gr.Textbox(label="Status", interactive=False, lines=1)
+                progress_box = gr.Textbox(label="Progress", interactive=False, lines=1)
+                # Keys from the last loaded preset that have no widget, carried over when saving under a new name
+                extras_state = gr.State({})
 
                 gr.Markdown("### Live Log")
                 log_box = gr.Textbox(label="Log", lines=20, interactive=False, max_lines=20, elem_id="log-box")
@@ -1114,178 +1414,122 @@ def make_ui():
                     <span style="color:#5fa8be;"> for more details.</span>
                 </div>
                 """)
-                gr.HTML(_HELP_HTML)
+                gr.HTML(_build_help_html(cfg))
 
         # ----------------------------------------------------------------
-        # All config inputs in order (must match build_conf_dict signature)
+        # Preset settings, keyed like build_conf_dict's parameters
         # ----------------------------------------------------------------
-        all_inputs = [
-            scenes, scene_prefix, scene_suffix,
-            direct_image_prompts, init_image, direct_init_weight, semantic_init_weight,
-            image_model, vqgan_model,
-            animation_mode, video_path, frame_stride,
-            width, height,
-            steps_per_scene, steps_per_frame, interpolation_steps, pre_animation_steps,
-            translate_x, translate_y, translate_z_3d, rotate_2d, rotate_3d,
-            zoom_x_2d, zoom_y_2d, lock_camera,
-            cutouts, cut_pow, cutout_border, learning_rate, seed, reset_lr_each_frame,
-            border_mode, sampling_mode, infill_mode,
-            ViTB32, ViTB16, ViTL14, ViTL14_336px, RN50, RN101, RN50x4, RN50x16, RN50x64,
-            palette_size, palettes, pixel_size, gamma, hdr_weight, palette_normalization_weight,
-            random_initial_palette, lock_palette, target_palette,
-            frames_per_second, save_every, display_every, file_namespace, allow_overwrite, backups,
-            field_of_view, near_plane, far_plane,
-            gradient_accumulation_steps, smoothing_weight,
-            direct_stabilization_weight, semantic_stabilization_weight,
-            depth_stabilization_weight, edge_stabilization_weight, flow_stabilization_weight,
-            reencode_each_frame,
-            input_audio, input_audio_offset, flow_long_term_samples,
-            breath_mode,
-        ]
+        fields = dict(
+            scenes=scenes, scene_prefix=scene_prefix, scene_suffix=scene_suffix,
+            direct_image_prompts=direct_image_prompts, init_image=init_image,
+            direct_init_weight=direct_init_weight, semantic_init_weight=semantic_init_weight,
+            image_model=image_model, vqgan_model=vqgan_model,
+            animation_mode=animation_mode, video_path=video_path, frame_stride=frame_stride,
+            width=width, height=height,
+            steps_per_scene=steps_per_scene, steps_per_frame=steps_per_frame,
+            interpolation_steps=interpolation_steps, pre_animation_steps=pre_animation_steps,
+            translate_x=translate_x, translate_y=translate_y, translate_z_3d=translate_z_3d,
+            rotate_2d=rotate_2d, rotate_3d=rotate_3d, zoom_x_2d=zoom_x_2d, zoom_y_2d=zoom_y_2d,
+            lock_camera=lock_camera,
+            cutouts=cutouts, cut_pow=cut_pow, cutout_border=cutout_border,
+            learning_rate=learning_rate, seed=seed, reset_lr_each_frame=reset_lr_each_frame,
+            border_mode=border_mode, sampling_mode=sampling_mode, infill_mode=infill_mode,
+            ViTB32=ViTB32, ViTB16=ViTB16, ViTL14=ViTL14, ViTL14_336px=ViTL14_336px,
+            RN50=RN50, RN101=RN101, RN50x4=RN50x4, RN50x16=RN50x16, RN50x64=RN50x64,
+            palette_size=palette_size, palettes=palettes, pixel_size=pixel_size, gamma=gamma,
+            hdr_weight=hdr_weight, palette_normalization_weight=palette_normalization_weight,
+            random_initial_palette=random_initial_palette, lock_palette=lock_palette,
+            target_palette=target_palette,
+            frames_per_second=frames_per_second, save_every=save_every, display_every=display_every,
+            file_namespace=file_namespace, backups=backups,
+            field_of_view=field_of_view, near_plane=near_plane, far_plane=far_plane,
+            gradient_accumulation_steps=gradient_accumulation_steps, smoothing_weight=smoothing_weight,
+            direct_stabilization_weight=direct_stabilization_weight,
+            semantic_stabilization_weight=semantic_stabilization_weight,
+            depth_stabilization_weight=depth_stabilization_weight,
+            edge_stabilization_weight=edge_stabilization_weight,
+            flow_stabilization_weight=flow_stabilization_weight,
+            reencode_each_frame=reencode_each_frame,
+            input_audio=input_audio, input_audio_offset=input_audio_offset,
+            flow_long_term_samples=flow_long_term_samples,
+            breath_mode=breath_mode,
+        )
+        assert fields.keys() == CONF_KEYS, fields.keys() ^ CONF_KEYS
+        all_inputs = [fields[key] for key in CONF_FIELDS]
+        labels = {key: widget.label for key, widget in fields.items()}
 
         # ----------------------------------------------------------------
         # Callbacks
         # ----------------------------------------------------------------
-        def save_config(*args):
-            name = args[0]
-            values = args[1:]
-            if not name:
-                return gr.update(), "Enter a config name first."
-            if not name.endswith(".yaml"):
-                name += ".yaml"
-            data = build_conf_dict(*values)
-            path = CONF_DIR / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("# @package _global_\n")
-                yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
-            return gr.Dropdown(choices=get_conf_files()), f"Saved to config/conf/{name}"
-
-        def run_render(conf_name):
-            if not conf_name:
-                return "No config name set. Enter a name above."
-            name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
-            if not (CONF_DIR / name).exists():
-                return f"Config '{name}' not found. Click Save first."
-            return start_render(conf_name)
+        def save_config(name, extras, *args):
+            values = dict(zip(CONF_FIELDS, args))
+            problems = conf_problems(name, values, labels)
+            if problems:
+                return gr.update(), " ".join(problems)
+            filename, notes = write_conf(name, extras, values)
+            return gr.Dropdown(choices=get_conf_files()), " ".join([f"Saved to config/conf/{filename}."] + notes)
 
         def refresh(namespace):
-            eta = _get_eta()
-            log = get_log()
-            if eta:
-                log = f"[{eta}]\n{log}"
-            return log, get_latest_frame(namespace)
+            progress = (_get_eta() or "Starting...") if _running else ""
+            # Stop polling once the render has ended; this final tick still shows its last log and frame
+            return get_log(), get_latest_frame(namespace), progress, gr.Timer(active=_running)
+
+        def tick(namespace):
+            # Once the render has ended, offer its frames for encoding
+            return *refresh(namespace), (gr.skip() if _running else refresh_encode_list())
 
         def load_existing(name):
             if not name:
-                return [gr.update()] * (len(all_inputs) + 1)
-            data = merged_config(name)
-            conf_display = name.removesuffix(".yaml")
-            return [
-                " ".join(data.get("scenes", "").split()),
-                " ".join(data.get("scene_prefix", "").split()),
-                " ".join(data.get("scene_suffix", "").split()),
-                data.get("direct_image_prompts", ""),
-                data.get("init_image", ""),
-                str(data.get("direct_init_weight", "") or ""),
-                str(data.get("semantic_init_weight", "") or ""),
-                data.get("image_model", "Limited Palette"),
-                data.get("vqgan_model", "coco"),
-                data.get("animation_mode", "3D"),
-                data.get("video_path", ""),
-                _num(data.get("frame_stride", 1), 1),
-                _num(data.get("width", 512), 512),
-                _num(data.get("height", 512), 512),
-                _num(data.get("steps_per_scene", 10000), 10000),
-                _num(data.get("steps_per_frame", 80), 80),
-                _num(data.get("interpolation_steps", 250), 250),
-                _num(data.get("pre_animation_steps", 50), 50),
-                str(data.get("translate_x", "0")),
-                str(data.get("translate_y", "0")),
-                str(data.get("translate_z_3d", "0")),
-                str(data.get("rotate_2d", "0")),
-                str(data.get("rotate_3d", "[1, 0, 0, 0]")),
-                str(data.get("zoom_x_2d", "0")),
-                str(data.get("zoom_y_2d", "0")),
-                data.get("lock_camera", True),
-                _num(data.get("cutouts", 50), 50),
-                _num(data.get("cut_pow", 2.1), 2.1),
-                _num(data.get("cutout_border", 0.25), 0.25),
-                str(data.get("learning_rate", "") or ""),
-                str(data.get("seed", "")),
-                data.get("reset_lr_each_frame", True),
-                data.get("border_mode", "wrap"),
-                data.get("sampling_mode", "bicubic"),
-                data.get("infill_mode", "wrap"),
-                data.get("ViTB32", True),
-                data.get("ViTB16", True),
-                data.get("ViTL14", False),
-                data.get("ViTL14_336px", False),
-                data.get("RN50", False),
-                data.get("RN101", False),
-                data.get("RN50x4", True),
-                data.get("RN50x16", False),
-                data.get("RN50x64", False),
-                _num(data.get("palette_size", 50), 50),
-                _num(data.get("palettes", 18), 18),
-                _num(data.get("pixel_size", 4), 4),
-                _num(data.get("gamma", 1.5), 1.5),
-                _num(data.get("hdr_weight", 0.35), 0.35),
-                _num(data.get("palette_normalization_weight", 0.75), 0.75),
-                data.get("random_initial_palette", False),
-                data.get("lock_palette", False),
-                data.get("target_palette", ""),
-                _num(data.get("frames_per_second", 15), 15),
-                _num(data.get("save_every", 0), 0),
-                _num(data.get("display_every", 50), 50),
-                data.get("file_namespace", "default"),
-                data.get("allow_overwrite", True),
-                _num(data.get("backups", 0), 0),
-                _num(data.get("field_of_view", 60), 60),
-                _num(data.get("near_plane", 2000), 2000),
-                _num(data.get("far_plane", 12500), 12500),
-                _num(data.get("gradient_accumulation_steps", 2), 2),
-                _num(data.get("smoothing_weight", 0.02), 0.02),
-                str(data.get("direct_stabilization_weight", "1")),
-                str(data.get("semantic_stabilization_weight", "") or ""),
-                str(data.get("depth_stabilization_weight", "") or ""),
-                str(data.get("edge_stabilization_weight", "") or ""),
-                str(data.get("flow_stabilization_weight", "") or ""),
-                data.get("reencode_each_frame", True),
-                data.get("input_audio", ""),
-                _num(data.get("input_audio_offset", 0), 0),
-                _num(data.get("flow_long_term_samples", 1), 1),
-                data.get("breath_mode", False),
-                conf_display,
-            ]
+                return [gr.update()] * (len(all_inputs) + 4)
+            if not (CONF_DIR / name).exists():
+                missing = [f"{name} no longer exists.", gr.Dropdown(choices=get_conf_files(), value=None)]
+                return [gr.update()] * (len(all_inputs) + 2) + missing
+            data = _resolve_references(merged_config(name))
+            defaults = load_defaults()
+            extras = {k: v for k, v in load_conf(name).items() if k not in CONF_KEYS}
+            values = [_ui_value(key, fields[key], data.get(key), defaults.get(key)) for key in CONF_FIELDS]
+            return values + [name.removesuffix(".yaml"), extras, f"Loaded {name}.", gr.update()]
 
-        def run_and_activate_timer(*args):
+        def run_and_activate_timer(name, extras, *args):
+            if _running:
+                # Don't overwrite a preset that may be in use; just resume live updates
+                return gr.update(), "Already running.", gr.Timer(active=True)
+            values = dict(zip(CONF_FIELDS, args))
+            problems = conf_problems(name, values, labels)
+            if problems:
+                return gr.update(), " ".join(problems), gr.Timer(active=False)
             # Auto-save before running so the YAML always matches the UI
-            save_result = save_config(*args)
-            conf_name = args[0]
-            msg = run_render(conf_name)
-            return save_result[0], msg, gr.Timer(active=True)
+            filename, notes = write_conf(name, extras, values)
+            msg = start_render(filename)
+            return gr.Dropdown(choices=get_conf_files()), " ".join([msg] + notes), gr.Timer(active=_running)
 
         def stop_and_deactivate_timer(namespace):
             msg = stop_render()
-            log, frame = refresh(namespace)
-            return msg, gr.Timer(active=False), log, frame
+            log, frame, progress, _ = refresh(namespace)
+            return msg, gr.Timer(active=False), log, frame, progress, refresh_encode_list()
 
-        save_btn.click(fn=save_config, inputs=[conf_name_input] + all_inputs, outputs=[load_conf_dropdown, status_box])
-        run_btn.click(fn=run_and_activate_timer, inputs=[conf_name_input] + all_inputs, outputs=[load_conf_dropdown, status_box, timer])
-        stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace], outputs=[status_box, timer, log_box, frame_preview])
-        refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
-        timer.tick(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview])
-        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input])
-        refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
-
-        # Encode video callbacks
         def refresh_encode_list():
             runs = get_encodable_runs()
-            choices = [(lbl, path) for lbl, path in runs]
-            return gr.Dropdown(choices=choices, value=choices[0][1] if choices else None)
+            return gr.Dropdown(choices=runs, value=runs[0][1] if runs else None)
 
+        def encode_fps_for_run(frames_dir):
+            fps = run_fps(frames_dir) if frames_dir else None
+            return fps if fps else gr.skip()
+
+        save_btn.click(fn=save_config, inputs=[conf_name_input, extras_state] + all_inputs, outputs=[load_conf_dropdown, status_box])
+        run_btn.click(fn=run_and_activate_timer, inputs=[conf_name_input, extras_state] + all_inputs, outputs=[load_conf_dropdown, status_box, timer])
+        stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace], outputs=[status_box, timer, log_box, frame_preview, progress_box, encode_run_dropdown])
+        refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview, progress_box, timer])
+        timer.tick(fn=tick, inputs=[file_namespace], outputs=[log_box, frame_preview, progress_box, timer, encode_run_dropdown])
+        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input, extras_state, status_box, load_conf_dropdown])
+        refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
+        # A page reload resets the timer; resume live updates if a render is still going
+        demo.load(fn=lambda: gr.Timer(active=_running), outputs=[timer])
+
+        # Encode video callbacks
         encode_refresh_btn.click(fn=refresh_encode_list, outputs=[encode_run_dropdown])
+        # Default the encode FPS to the frame rate the run was rendered for
+        encode_run_dropdown.change(fn=encode_fps_for_run, inputs=[encode_run_dropdown], outputs=[encode_fps])
         encode_btn.click(fn=encode_video, inputs=[encode_run_dropdown, encode_fps, encode_format], outputs=[encode_status])
         # Auto-populate on load
         demo.load(fn=refresh_encode_list, outputs=[encode_run_dropdown])
