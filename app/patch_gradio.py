@@ -3,7 +3,7 @@ patch_gradio.py
 ---------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, safe video conversion, Video Source
-end of video, prompt mask positions, output folder).
+end of video, prompt mask positions, output and backup folders).
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped. If any
@@ -29,6 +29,16 @@ PYTTI_WORKHORSE_PATCHES = [
     (
         'OUTPATH = f"{os.getcwd()}/images_out/"',
         'OUTPATH = "images_out/"',
+    ),
+    # Only make backup/<namespace> when backups are on, the only time pytti writes there
+    # (Video Source reads it, and the UI turns backups on for that); otherwise every
+    # render left it empty.
+    (
+        '        Path(f"{OUTPATH}/{params.file_namespace}").mkdir(parents=True, exist_ok=True)\n'
+        '        Path(f"backup/{params.file_namespace}").mkdir(parents=True, exist_ok=True)',
+        '        Path(f"{OUTPATH}/{params.file_namespace}").mkdir(parents=True, exist_ok=True)\n'
+        '        if params.backups > 0:\n'
+        '            Path(f"backup/{params.file_namespace}").mkdir(parents=True, exist_ok=True)',
     ),
     # Suppress redundant _settings.txt dump (UI saves configs as YAML presets)
     (
