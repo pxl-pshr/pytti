@@ -46,8 +46,8 @@ border_mode: wrap
 ##########
 
 field_of_view: 60
-near_plane: 2000
-far_plane: 12500
+near_plane: 1
+far_plane: 10000
 
 #######################
 ### Audioreactivity ###
@@ -60,10 +60,10 @@ input_audio_filters: []
 pre_animation_steps: 80  # a multiple of steps_per_frame, so frames are saved right before each camera move
 lock_camera: true
 
-translate_x: '22'
+translate_x: '-1700*sin(radians(1.5))'
 translate_y: '0'
-translate_z_3d: '27'
-rotate_3d: '[cos(radians(1)),-sin(radians(0.3)),0,sin(radians(0.1))]'
+translate_z_3d: '(50+10*t)*sin(t/10*pi)**2'
+rotate_3d: '[cos(radians(1.5)), 0, -sin(radians(1.5))/sqrt(2), sin(radians(1.5))/sqrt(2)]'
 rotate_2d: '0'
 zoom_x_2d: '0'
 zoom_y_2d: '0'

@@ -184,7 +184,11 @@ To turn `a` degrees per frame around an axis `x, y, z`, use `[cos(radians(a/2)),
 
 In 3D, `lock_camera` (on by default) subtracts the average movement from every frame so the view doesn't drift. That cancels `translate_x`, `translate_y` and looking up, down, left or right, leaving only the parallax between near and far objects. Set `lock_camera: false` to pan or turn. Rolls and `translate_z_3d` are not affected.
 
-3D moves shrink with depth, so the same numbers do much less to distant scenery. At the default planes (`near_plane: 2000`, `far_plane: 12500`), a 1 degree roll per frame turns the nearest objects about 0.2 degrees and the farthest about 0.035 degrees, and `translate_z_3d: 27` zooms the nearest objects about 0.3% per frame and the farthest almost not at all. Raise the values, or lower `near_plane` and `far_plane`, to get more movement.
+3D moves shrink with depth, so the same numbers do much less to distant scenery. The depth model measures 0 to 10 meters, and `near_plane` and `far_plane` spread that range over pixels, so with the defaults (`near_plane: 1`, `far_plane: 10000`) something 1 meter away sits about 1000 pixels from the camera and something 5 meters away about 5000. At 1 meter, a 1 degree roll per frame turns that content about 0.44 degrees and `translate_z_3d: 27` zooms it about 1.2% per frame. At 5 meters it is about 0.09 degrees and 0.05%. Raising `near_plane` pushes everything farther away, which weakens all movement and flattens the parallax.
+
+Parallax needs depth in the image itself. Abstract or pattern-like images often read as a nearly flat wall 1 to 2 meters away, so the camera moves them like a flat picture. Prompts that describe depth, such as tunnels, corridors or one-point perspective, give the depth model more to work with.
+
+With no preset changes, 3D mode runs the animation from the original PyTTI 5 notebook: a steady turn and roll of 3 degrees per frame that circles a point about 1200 pixels into the scene, and forward pushes that peak every 10 seconds and grow stronger each time.
 
 ## What to put in the text
 
