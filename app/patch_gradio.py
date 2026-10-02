@@ -3,7 +3,7 @@ patch_gradio.py
 ---------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, safe video conversion, Video Source
-end of video, prompt mask positions).
+end of video, prompt mask positions, output folder).
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped. If any
@@ -23,6 +23,13 @@ SITE_PACKAGES = pathlib.Path(__file__).parent.parent / "python" / "Lib" / "site-
 PYTTI_WORKHORSE = SITE_PACKAGES / "pytti" / "workhorse.py"
 
 PYTTI_WORKHORSE_PATCHES = [
+    # OUTPATH was fixed when workhorse.py was imported, before Hydra changes into the
+    # render's folder, so every render left an empty app/images_out/<namespace>. As a
+    # relative path it resolves against the render's folder, where the frames are saved.
+    (
+        'OUTPATH = f"{os.getcwd()}/images_out/"',
+        'OUTPATH = "images_out/"',
+    ),
     # Suppress redundant _settings.txt dump (UI saves configs as YAML presets)
     (
         '        settings_path = f"{OUTPATH}/{params.file_namespace}/{base_name}_settings.txt"\n'
