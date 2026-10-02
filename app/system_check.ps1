@@ -9,13 +9,14 @@ $ErrorActionPreference = 'Stop'
 # The folder install.bat installs into (this script lives in its app\ subfolder)
 $root = Split-Path -Parent $PSScriptRoot
 
-# Longest file path the install creates, relative to $root (a tensorflow header under
+# Longest file path the install creates, relative to $root (a transformers .pyc under
 # python\Lib\site-packages). Without long path support Windows caps full paths at 259 characters.
-$longestInstallPath = 194
+$longestInstallPath = 165
 
 # Approximate space needed: the finished python\ folder, and pip's downloads and cache
+# (the PyTorch wheel alone is 3.3 GB)
 $installGB = 9
-$downloadGB = 6
+$downloadGB = 8
 
 $script:result = 0
 
@@ -88,13 +89,13 @@ Check 'graphics card' {
             Fail 'NVIDIA graphics card found, but its driver is missing or not working' 'Install the latest driver from https://www.nvidia.com/drivers, restart, then run install.bat again.'
         } else {
             $found = @($cards | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ', '
-            Fail 'No NVIDIA graphics card found' @("Found: $(if ($found) { $found } else { 'none' })", 'PyTTI needs an NVIDIA GPU (GTX 10xx through RTX 40xx). AMD and Intel GPUs are not supported.')
+            Fail 'No NVIDIA graphics card found' @("Found: $(if ($found) { $found } else { 'none' })", 'PyTTI needs an NVIDIA GPU (GTX 10xx through RTX 50xx). AMD and Intel GPUs are not supported.')
         }
         return
     }
 
-    # PyTorch 2.0 + CUDA 11.7 runs on compute capability 5.0 (GTX 9xx) through 8.9 (RTX 40xx)
-    $supported = @($gpus | Where-Object { -not $_.Arch -or ($_.Arch -ge [version]'5.0' -and $_.Arch -lt [version]'9.0') })
+    # PyTorch 2.7 + CUDA 12.8 runs on compute capability 5.0 (GTX 9xx) through 12.x (RTX 50xx)
+    $supported = @($gpus | Where-Object { -not $_.Arch -or ($_.Arch -ge [version]'5.0' -and $_.Arch -lt [version]'13.0') })
     foreach ($gpu in $gpus) {
         if ($supported -contains $gpu) {
             if ($gpu.Arch -and $gpu.Arch -lt [version]'6.0') {
@@ -106,29 +107,29 @@ Check 'graphics card' {
             }
             continue
         }
-        if ($gpu.Arch -ge [version]'9.0') {
+        if ($gpu.Arch -ge [version]'13.0') {
             $problem = "$($gpu.Label) is too new"
-            $hint = 'PyTTI uses PyTorch 2.0 with CUDA 11.7, which supports cards up to the RTX 40xx series. RTX 50xx is not supported.'
+            $hint = 'PyTTI uses PyTorch 2.7 with CUDA 12.8, which supports cards up to the RTX 50xx series.'
         } else {
             $problem = "$($gpu.Label) is too old"
-            $hint = 'PyTorch 2.0 needs a GTX 9xx series card or newer.'
+            $hint = 'PyTorch 2.7 needs a GTX 9xx series card or newer.'
         }
         # Another card in the PC can still run it
         if ($supported) { Warn $problem $hint } else { Fail $problem $hint }
     }
 
     $driver = $gpus[0].Driver
-    if ($driver -lt [version]'452.39') {
-        Fail "NVIDIA driver $driver is too old for CUDA 11" 'Update it from https://www.nvidia.com/drivers, then run install.bat again.'
-    } elseif ($driver -lt [version]'516.01') {
-        Warn "NVIDIA driver $driver is older than CUDA 11.7 expects (516.01)" 'Updating it from https://www.nvidia.com/drivers is recommended.'
+    if ($driver -lt [version]'528.33') {
+        Fail "NVIDIA driver $driver is too old for CUDA 12" 'Update it from https://www.nvidia.com/drivers, then run install.bat again.'
+    } elseif ($driver -lt [version]'570.65') {
+        Warn "NVIDIA driver $driver is older than CUDA 12.8 expects (570.65)" 'Updating it from https://www.nvidia.com/drivers is recommended.'
     } else {
         Pass "NVIDIA driver $driver"
     }
 }
 
 Check 'Visual C++ runtime' {
-    # PyTorch and TensorFlow load these from System32. A 32-bit PowerShell sees SysWOW64
+    # PyTorch loads these from System32. A 32-bit PowerShell sees SysWOW64
     # there instead; Sysnative is the real one.
     $system32 = if ([Environment]::Is64BitProcess) { [Environment]::SystemDirectory } else { "$env:windir\Sysnative" }
     if (@('msvcp140.dll', 'msvcp140_1.dll') | Where-Object { -not (Test-Path (Join-Path $system32 $_)) }) {

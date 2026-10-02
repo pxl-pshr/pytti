@@ -148,14 +148,14 @@ echo %DIM%       [+] numpy%R%
 python\python.exe -m pip install --no-warn-script-location numpy==1.23.5
 if errorlevel 1 goto :error
 
-echo %DIM%       [+] PyTorch + CUDA 11.7%R%
-python\python.exe -m pip install --no-warn-script-location torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.0 --index-url https://download.pytorch.org/whl/cu117
+echo %DIM%       [+] PyTorch + CUDA 12.8%R%
+python\python.exe -m pip install --no-warn-script-location torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] dependencies%R%
 :: fastapi/pydantic pinned to versions gradio 4.44.1 works with: newer ones pull in
 :: starlette 1.x, which breaks gradio's main page
-python\python.exe -m pip install --no-warn-script-location ipython scipy requests gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorflow==2.10.0
+python\python.exe -m pip install --no-warn-script-location ipython scipy requests gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex tqdm loguru Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex gdown==4.7.1 PyGLM tensorboard==2.10.1
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] AdaBins%R%

@@ -565,8 +565,11 @@ def start_render(conf_name: str):
         with _log_lock:
             _log_lines.append(seed_note)
         # UTF-8 output so the pipe decodes the same way whatever the Windows code page;
-        # INFO level drops pytti's per-step DEBUG output
-        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "LOGURU_LEVEL": "INFO"}
+        # INFO level drops pytti's per-step DEBUG output. torch >= 2.6 refuses to load
+        # checkpoints holding pickled objects (VQGAN imagenet's Lightning callbacks) unless
+        # told to; earlier torch versions ignore the variable.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "LOGURU_LEVEL": "INFO",
+               "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
         ffmpeg = _ffmpeg_exe()
         if ffmpeg and Path(ffmpeg).stem.lower() == "ffmpeg":
             env["PATH"] = str(Path(ffmpeg).parent) + os.pathsep + env.get("PATH", "")

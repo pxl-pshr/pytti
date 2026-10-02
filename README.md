@@ -5,7 +5,7 @@
 PyTTI Portable is a self-contained distributable of [pytti-core](https://github.com/pytti-tools/pytti-core) with a Gradio web UI. Everything is bootstrapped from a single `install.bat` — no system-wide Python required.
 
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![CUDA](https://img.shields.io/badge/CUDA-11.7-green)
+![CUDA](https://img.shields.io/badge/CUDA-12.8-green)
 ![Python](https://img.shields.io/badge/python-3.10-yellow)
 [![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 
@@ -35,8 +35,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 ## Requirements
 
 - Windows 10 or 11
-- NVIDIA GPU (GTX 10xx through RTX 40xx)
-  - RTX 50xx (Blackwell) is **not supported**
+- NVIDIA GPU (GTX 10xx through RTX 50xx)
 - Up-to-date NVIDIA drivers
 - [Git](https://git-scm.com) installed and on PATH
 - [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
@@ -56,6 +55,8 @@ cd pytti
 3. A browser window opens — start rendering
 
 To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-core patches automatically.
+Installs made before RTX 50xx support keep working on their older PyTorch; to move one to the new
+PyTorch, delete the `python` folder and run `install.bat` again.
 
 The first render will download CLIP and depth models (~1-4 GB), cached after that.
 
