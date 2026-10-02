@@ -3,7 +3,7 @@ patch_gradio.py
 ---------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, safe video conversion, Video Source
-end of video).
+end of video, prompt mask positions).
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped. If any
@@ -263,6 +263,21 @@ PYTTI_ROTOSCOPER_PATCHES = [
     ),
 ]
 
+# ── pytti-core patches: Perceptor/Prompt.py ───────────────────────────────────
+
+PYTTI_PROMPT = SITE_PACKAGES / "pytti" / "Perceptor" / "Prompt.py"
+
+PYTTI_PROMPT_PATCHES = [
+    # Direction masks (sky:3_u_0.3) and still image masks (fog:2_[mask.png]) were
+    # handed each cutout's size as its position and its position as its size, so they
+    # covered the wrong part of the frame, and an image mask gave NaN losses unless
+    # border_mode was clamp. Video masks already got the two in the right order.
+    (
+        '    return lambda pos, size, emb: mask_fun(size, pos, emb, parametric_eval(thresh))',
+        '    return lambda pos, size, emb: mask_fun(pos, size, emb, parametric_eval(thresh))',
+    ),
+]
+
 TARGETS = [
     (PYTTI_WORKHORSE, PYTTI_WORKHORSE_PATCHES, "workhorse.py"),
     (PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py"),
@@ -271,6 +286,7 @@ TARGETS = [
     (PYTTI_MSELOSS, PYTTI_IMAGE_PROMPT_PATCHES, "MSELossClass.py"),
     (PYTTI_LATENTLOSS, PYTTI_IMAGE_PROMPT_PATCHES, "LatentLossClass.py"),
     (PYTTI_ROTOSCOPER, PYTTI_ROTOSCOPER_PATCHES, "rotoscoper.py"),
+    (PYTTI_PROMPT, PYTTI_PROMPT_PATCHES, "Prompt.py"),
 ]
 
 # ── Apply patches ───────────────────────────────────────────────────────────

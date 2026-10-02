@@ -69,6 +69,7 @@ The first render will download CLIP and depth models (~1-4 GB), cached after tha
 pytti/
 ├── install.bat          # One-time installer (downloads Python, PyTorch, deps)
 ├── launch.bat           # Starts the Gradio UI
+├── PROMPTING.md         # Prompt and preset format reference
 ├── python/              # Embedded Python and all packages (created by install.bat)
 ├── app/
 │   ├── ui.py            # Gradio web UI
@@ -84,6 +85,10 @@ pytti/
 ## How It Works
 
 PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette or VQGAN) toward text prompts. In animation mode, each frame is warped via 2D/3D transforms with AdaBins depth estimation, then re-optimized toward the prompt — producing dreamlike, evolving visuals. Video Source mode follows an existing video instead, using GMA optical flow to keep frames consistent.
+
+## Writing Prompts
+
+[PROMPTING.md](PROMPTING.md) is the format reference for prompts and presets: the scene syntax, weights and stops, masks, time-based and audio-reactive weights, preset YAML and worked examples. It is written so you can hand it to an AI assistant and ask for a prompt or a preset that loads on the first try.
 
 ## Troubleshooting
 
