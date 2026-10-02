@@ -40,7 +40,7 @@ Scenes run one after another. Each lasts `steps_per_scene` steps, which is `step
 
 ## Hard rules
 
-1. **No colon inside prompt text.** The first colon always starts the weight. `image credit: nasa` treats "nasa" as the weight and the render stops with an error. Write `image credit nasa`. The same goes for ratios like 16:9 and for times.
+1. **No colon inside prompt text.** The first colon always starts the weight. `image credit: nasa` treats "nasa" as the weight and the render stops with an error. Write `image credit nasa`. Ratios like 16:9 and times like 12:30 are worse because they don't stop the render: the number after the colon quietly becomes the weight.
 2. **No pipe inside prompt text.** A pipe always separates prompts. There is no grouping or alternation: `(red|blue) car` becomes the two prompts `(red` and `blue) car`.
 3. **No square brackets around text.** A prompt that starts with `[` and ends with `]` is opened as an image file or URL.
 4. **A negative weight always gets a stop.** Write `text:-1:-.95`, never `text:-1`. Without a stop the engine keeps pushing away forever and draws "anti-text" artifacts.
@@ -73,7 +73,7 @@ A mask limits a prompt to part of the image. It comes after the weight, joined b
 | Semantic | `dragon:3_baby` | Applies the prompt only where CLIP sees the mask text |
 | Direction | `sky:3_u_0.3` | Applies the prompt to one side of a cutoff line |
 | Image file | `magical:3_[C:\masks\m.png]` | Applies the prompt to the white areas of the image |
-| Video file | `sunlight:3_[C:\masks\sky.mp4]` | The same, with a mask that changes from frame to frame. MP4 only |
+| Video file | `sunlight:3_[C:\masks\sky.mp4]` | The same, with a mask that changes from frame to frame. The file must end in lowercase `.mp4` |
 
 File masks always need the square brackets. Without them the path is read as semantic mask text. Put a minus before the path, `[-C:\masks\m.png]`, to apply the prompt to the black areas instead. A mask video that ends before the render does holds its last frame.
 
@@ -100,11 +100,11 @@ Direction and image masks rely on a fix that `launch.bat` applies to pytti-core.
 [C:\refs\coral.png]:2 | fractal clouds | hole in the sky
 ```
 
-**The Direct Image Prompts field** (`direct_image_prompts`) is a separate field with pixel-level targets. It takes `path:weight`, or `path:weight_maskpath` with a mask, and several entries separated by pipes. No square brackets here. A minus before the mask path inverts it, and a video mask must be MP4.
+**The Direct Image Prompts field** (`direct_image_prompts`) is a separate field with pixel-level targets. It takes `path:weight`, or `path:weight_maskpath` with a mask, and several entries separated by pipes. No square brackets here. A minus before the mask path inverts it, and a video mask must end in lowercase `.mp4`.
 
 **Init image.** `init_image` is a path. `direct_init_weight` keeps the pixels close to it and `semantic_init_weight` keeps the meaning close to it.
 
-Paths can be absolute (`C:\images\ref.png`), relative to the pytti folder, or URLs.
+Paths can be absolute (`C:\images\ref.png`) or URLs. A path relative to the pytti folder works only in the fields that hold a path (Init Image, the image part of Direct Image Prompts, Video Path, Target Palette and Input Audio), because the UI turns those into absolute paths. Image prompts and file masks inside Scenes, and mask paths in Direct Image Prompts, need an absolute path or a URL: the engine runs from the render's output folder, where a relative path is not found.
 
 ## Weights that change over time
 
@@ -182,6 +182,10 @@ The motion settings are strings holding Python expressions, evaluated once per f
 
 To turn `a` degrees per frame around an axis `x, y, z`, use `[cos(radians(a/2)), x*sin(radians(a/2)), y*sin(radians(a/2)), z*sin(radians(a/2))]`. Axis `1, 0, 0` looks up or down, `0, 1, 0` looks left or right and `0, 0, 1` rolls.
 
+In 3D, `lock_camera` (on by default) subtracts the average movement from every frame so the view doesn't drift. That cancels `translate_x`, `translate_y` and looking up, down, left or right, leaving only the parallax between near and far objects. Set `lock_camera: false` to pan or turn. Rolls and `translate_z_3d` are not affected.
+
+3D moves shrink with depth, so the same numbers do much less to distant scenery. At the default planes (`near_plane: 2000`, `far_plane: 12500`), a 1 degree roll per frame turns the nearest objects about 0.2 degrees and the farthest about 0.035 degrees, and `translate_z_3d: 27` zooms the nearest objects about 0.3% per frame and the farthest almost not at all. Raise the values, or lower `near_plane` and `far_plane`, to get more movement.
+
 ## What to put in the text
 
 CLIP learned from captioned images on the web, so write the way images are captioned.
@@ -252,7 +256,7 @@ sunset sky with orange clouds:3_u_0.45 | calm ocean reflecting the sun:3_d_0.55 
 
 ### A three-scene 3D animation, as a preset
 
-Each scene lasts 6000 / (80 * 15) = 5 seconds, with a crossfade between scenes.
+Each scene lasts 6000 / (80 * 15) = 5 seconds, with a crossfade between scenes. The camera pushes forward while turning slowly, so `lock_camera` is off; with it on, the turn would be cancelled.
 
 ```yaml
 # @package _global_
@@ -272,6 +276,7 @@ translate_x: '0'
 translate_y: '0'
 translate_z_3d: '30 + 10*sin(t)'
 rotate_3d: '[cos(radians(0.5)), 0, sin(radians(0.5)), 0]'
+lock_camera: false
 ```
 
 ### Audio-reactive, as a preset
