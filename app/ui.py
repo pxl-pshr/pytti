@@ -353,6 +353,7 @@ _render_scene: int = 0            # completed scenes count
 _render_dir: Path | None = None   # Hydra run folder of the current (or last) render
 _render_namespace: str = ""       # file_namespace of that render
 _scene_prompt_count: int = 0     # how many "Running prompt:" lines we've seen
+_render_end_step: int | None = None  # Video Source: step where the source video runs out
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
 _stop_requested: bool = False
@@ -364,13 +365,18 @@ _LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(|^<PIL\.Ima
 # Match tqdm output like "  5%|▌         | 500/10000 [00:33<10:30, 15.08it/s]"
 _TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
 _SCENE_RE = re.compile(r"Running prompt:", re.IGNORECASE)
+# Logged by the patched workhorse.py when the source video is shorter than the render
+_VIDEO_END_RE = re.compile(r"render will end at step (\d+)")
 
 def _render_progress() -> tuple[int, int]:
     """(total steps, steps done) of the current render, from its config and tqdm progress."""
     conf = _render_conf or {}
     num_scenes = max(1, len([s for s in str(conf.get("scenes", "")).split("||") if s.strip()]))
     steps_per_scene = int(conf.get("steps_per_scene", 10000))
-    return num_scenes * steps_per_scene, _render_scene * steps_per_scene + _render_step
+    total = num_scenes * steps_per_scene
+    if _render_end_step is not None:
+        total = min(total, _render_end_step)
+    return total, _render_scene * steps_per_scene + _render_step
 
 
 def _render_frames() -> list[Path]:
@@ -427,7 +433,7 @@ def _kill_tree(proc: subprocess.Popen):
 
 
 def _stream_output(proc):
-    global _running, _render_its, _render_step, _render_scene, _scene_prompt_count
+    global _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_end_step
     last_progress_idx = -1  # index in _log_lines of the latest tqdm line, if nothing was logged after it
     try:
         for line in iter(proc.stdout.readline, ""):
@@ -449,6 +455,9 @@ def _stream_output(proc):
                 _scene_prompt_count += 1
                 # First "Running prompt:" is scene 0 starting; subsequent ones mean prior scene completed
                 _render_scene = max(0, _scene_prompt_count - 1)
+            end = _VIDEO_END_RE.search(clean)
+            if end:
+                _render_end_step = int(end.group(1))
             with _log_lock:
                 if m and _log_lines and last_progress_idx == len(_log_lines) - 1:
                     _log_lines[-1] = clean  # keep one line per progress bar instead of one per redraw
@@ -533,7 +542,7 @@ def _new_run_dir() -> Path:
 
 
 def start_render(conf_name: str):
-    global _proc, _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended, _render_dir, _render_namespace
+    global _proc, _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended, _render_dir, _render_namespace, _render_end_step
     with _proc_lock:
         if _running:
             return "Already running."
@@ -545,6 +554,7 @@ def start_render(conf_name: str):
         _render_step = 0
         _render_scene = 0
         _scene_prompt_count = 0
+        _render_end_step = None
         _render_start = time.time()
         # Snapshot config for ETA calculations
         name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"

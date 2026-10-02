@@ -2,7 +2,8 @@
 patch_gradio.py
 ---------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
-zero-padded frame names, Windows paths, safe video conversion).
+zero-padded frame names, Windows paths, safe video conversion, Video Source
+end of video).
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped. If any
@@ -62,6 +63,37 @@ PYTTI_WORKHORSE_PATCHES = [
         '            semantic_init_prompt=semantic_init_prompt,\n'
         '            init_image_pil=init_image_pil,\n'
         '        )',
+    ),
+    # Video Source: end the render when the source video runs out. Past its last
+    # frame pytti only re-stylizes that frame, which can take hours.
+    (
+        '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
+        '        for scene in prompts[skip_prompts:]:\n'
+        '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
+        '            i += model.run_steps(\n'
+        '                params.steps_per_scene - skip_steps,\n',
+        '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
+        '\n'
+        '        # Video Source: stop at the first step whose target frame (frame_stride past\n'
+        '        # (i - pre_animation_steps) * frame_stride // steps_per_frame) is past the video\n'
+        '        end_step = len(prompts) * params.steps_per_scene\n'
+        '        if video_frames is not None and params.frame_stride > 0:\n'
+        '            n_frames = len(video_frames)\n'
+        '            video_end = params.pre_animation_steps + (\n'
+        '                (n_frames - params.frame_stride) * params.steps_per_frame + params.frame_stride - 1\n'
+        '            ) // params.frame_stride\n'
+        '            if video_end < end_step:\n'
+        '                end_step = video_end\n'
+        '                logger.info(\n'
+        '                    f"Video source has {n_frames} frames, so the render will end at step {end_step} "\n'
+        '                    f"of {len(prompts) * params.steps_per_scene}"\n'
+        '                )\n'
+        '        for scene in prompts[skip_prompts:]:\n'
+        '            if i >= end_step:\n'
+        '                break\n'
+        '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
+        '            i += model.run_steps(\n'
+        '                min(params.steps_per_scene - skip_steps, end_step - i),\n',
     ),
 ]
 
@@ -210,6 +242,24 @@ PYTTI_ROTOSCOPER_PATCHES = [
         '\n'
         '        subprocess.run(cmd, check=True)\n'
         '        os.replace(out_fname + ".part.mp4", out_fname)\n',
+    ),
+    # imageio reports a video's frame count as inf, which makes len() huge, so
+    # pytti's end-of-video clamps never trigger and it reads past the last frame
+    # (IndexError). Count the frames: a stream copy, no decoding, about a second.
+    (
+        '    vid = imageio.get_reader(out_fname, "ffmpeg")\n'
+        '    n_frames = vid._meta["nframes"]\n',
+        '    vid = imageio.get_reader(out_fname, "ffmpeg")\n'
+        '    vid._nframes = vid._meta["nframes"] = vid.count_frames()\n'
+        '    n_frames = vid._meta["nframes"]\n',
+    ),
+    # Video masks shorter than the render hold their last frame
+    (
+        '            return\n'
+        '        mask_pil = Image.fromarray(self.frames.get_data(frame_n)).convert("L")\n',
+        '            return\n'
+        '        frame_n = min(frame_n, len(self.frames) - 1)\n'
+        '        mask_pil = Image.fromarray(self.frames.get_data(frame_n)).convert("L")\n',
     ),
 ]
 
