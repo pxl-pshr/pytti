@@ -755,10 +755,27 @@ def _latest_run_frames(namespace: str) -> list[Path]:
     return []
 
 
+_PNG_END = b"IEND\xaeB`\x82"  # the closing chunk of every PNG
+
+
+def _png_complete(path: Path) -> bool:
+    """True once the PNG's closing IEND chunk is on disk."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(-len(_PNG_END), os.SEEK_END)
+            return f.read() == _PNG_END
+    except OSError:
+        return False
+
+
 def get_latest_frame(namespace: str):
-    """Newest frame of the current (or last) render; before any render, of the newest run using namespace."""
+    """Newest finished frame of the current (or last) render; before any render, of the newest run using namespace."""
     frames = _render_frames() if _render_dir is not None else _latest_run_frames(namespace)
-    return str(max(frames, key=lambda p: p.stat().st_mtime)) if frames else None
+    # outputs/ is served as static files, read from disk as they are, so skip a frame pytti is still writing
+    for frame in sorted(frames, key=lambda p: p.stat().st_mtime, reverse=True):
+        if _png_complete(frame):
+            return str(frame)
+    return None
 
 
 
