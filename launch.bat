@@ -2,6 +2,9 @@
 setlocal
 cd /d "%~dp0"
 
+:: Use only the packages in python\, not ones from the user's own Python (AppData)
+set "PYTHONNOUSERSITE=1"
+
 :: Enable ANSI escape codes (Windows 10+)
 for /f %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
 
