@@ -3,7 +3,7 @@ pytti Portable UI
 =================
 Run via launch.bat — do not run directly with system Python.
 """
-__version__ = "1.0.0-beta"  # install.bat and launch.bat read this line for their banners
+__version__ = "1.1.0-beta"  # install.bat and launch.bat read this line for their banners
 import atexit
 import contextlib
 import html
