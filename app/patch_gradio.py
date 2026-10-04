@@ -2,17 +2,25 @@
 patch_gradio.py
 ---------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
-zero-padded frame names, Windows paths, safe video conversion, Video Source
-end of video, prompt mask positions, output and backup folders).
+zero-padded frame names, Windows paths, Video Source and video mask conversion,
+Video Source end of video, prompt mask positions, output and backup folders,
+VQGAN downloads, audio input).
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
-after `git pull`. Re-running is safe: patches already applied are skipped. If any
-patch can't be applied, nothing is written and the script exits with status 1.
+after `git pull`. Re-running is safe: patches already applied are skipped.
+
+Exit status:
+    0  patched, or nothing to do
+    1  pytti-core doesn't match the expected version; nothing was written
+    2  a file could not be read or written (e.g. locked by another program);
+       running this again finishes the job
 
 The gradio_client schema fix is applied at runtime by ui.py instead.
 
     python patch_gradio.py [--quiet]
 """
+import errno
+import os
 import pathlib
 import sys
 
@@ -21,6 +29,34 @@ SITE_PACKAGES = pathlib.Path(__file__).parent.parent / "python" / "Lib" / "site-
 # ── pytti-core patches: workhorse.py ───────────────────────────────────────
 
 PYTTI_WORKHORSE = SITE_PACKAGES / "pytti" / "workhorse.py"
+
+# The Video Source end as earlier versions of this script inserted it (it could stop
+# before the last frame was saved, e.g. with a frame_stride above 1); installs patched
+# with it are upgraded in place
+_VIDEO_END_V1 = (
+    '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
+    '\n'
+    '        # Video Source: stop at the first step whose target frame (frame_stride past\n'
+    '        # (i - pre_animation_steps) * frame_stride // steps_per_frame) is past the video\n'
+    '        end_step = len(prompts) * params.steps_per_scene\n'
+    '        if video_frames is not None and params.frame_stride > 0:\n'
+    '            n_frames = len(video_frames)\n'
+    '            video_end = params.pre_animation_steps + (\n'
+    '                (n_frames - params.frame_stride) * params.steps_per_frame + params.frame_stride - 1\n'
+    '            ) // params.frame_stride\n'
+    '            if video_end < end_step:\n'
+    '                end_step = video_end\n'
+    '                logger.info(\n'
+    '                    f"Video source has {n_frames} frames, so the render will end at step {end_step} "\n'
+    '                    f"of {len(prompts) * params.steps_per_scene}"\n'
+    '                )\n'
+    '        for scene in prompts[skip_prompts:]:\n'
+    '            if i >= end_step:\n'
+    '                break\n'
+    '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
+    '            i += model.run_steps(\n'
+    '                min(params.steps_per_scene - skip_steps, end_step - i),\n'
+)
 
 PYTTI_WORKHORSE_PATCHES = [
     # OUTPATH was fixed when workhorse.py was imported, before Hydra changes into the
@@ -84,23 +120,38 @@ PYTTI_WORKHORSE_PATCHES = [
     # Video Source: end the render when the source video runs out. Past its last
     # frame pytti only re-stylizes that frame, which can take hours.
     (
-        '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
-        '        for scene in prompts[skip_prompts:]:\n'
-        '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
-        '            i += model.run_steps(\n'
-        '                params.steps_per_scene - skip_steps,\n',
+        (
+            '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
+            '        for scene in prompts[skip_prompts:]:\n'
+            '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
+            '            i += model.run_steps(\n'
+            '                params.steps_per_scene - skip_steps,\n',
+            _VIDEO_END_V1,
+        ),
         '        last_scene = prompts[0] if skip_prompts == 0 else prompts[skip_prompts - 1]\n'
         '\n'
-        '        # Video Source: stop at the first step whose target frame (frame_stride past\n'
-        '        # (i - pre_animation_steps) * frame_stride // steps_per_frame) is past the video\n'
+        '        # Video Source: end the render with the last save that shows the last source\n'
+        '        # frame. The target frame moves only at steps pre_animation_steps + m *\n'
+        '        # steps_per_frame, to frame (m + 1) * frame_stride (at most the last frame), and\n'
+        '        # the frame saved at step s is the image after steps 0 to s - 1.\n'
         '        end_step = len(prompts) * params.steps_per_scene\n'
-        '        if video_frames is not None and params.frame_stride > 0:\n'
-        '            n_frames = len(video_frames)\n'
-        '            video_end = params.pre_animation_steps + (\n'
-        '                (n_frames - params.frame_stride) * params.steps_per_frame + params.frame_stride - 1\n'
-        '            ) // params.frame_stride\n'
-        '            if video_end < end_step:\n'
-        '                end_step = video_end\n'
+        '        n_frames = len(video_frames) if video_frames is not None else 0\n'
+        '        if n_frames and params.frame_stride > 0 and params.save_every > 0:\n'
+        '            # Moves until the target is the last frame. Without pre-animation steps\n'
+        '            # frame 0 is never a target, so even a one-frame video needs one.\n'
+        '            moves = -(-(n_frames - 1) // params.frame_stride)\n'
+        '            if params.pre_animation_steps == 0:\n'
+        '                moves = max(moves, 1)\n'
+        '            # Steps last_start to repeat - 1 render the last frame; later ones re-stylize it\n'
+        '            repeat = params.pre_animation_steps + moves * params.steps_per_frame\n'
+        '            last_start = repeat - params.steps_per_frame if moves else 0\n'
+        '            # Stop after the last save up to step repeat or, when save_every skips the\n'
+        '            # steps that render the last frame, after the next save, which shows it\n'
+        '            save = (repeat + 1) // params.save_every * params.save_every - 1\n'
+        '            if save <= last_start:\n'
+        '                save += params.save_every\n'
+        '            if save + 1 < end_step:\n'
+        '                end_step = save + 1\n'
         '                logger.info(\n'
         '                    f"Video source has {n_frames} frames, so the render will end at step {end_step} "\n'
         '                    f"of {len(prompts) * params.steps_per_scene}"\n'
@@ -237,28 +288,116 @@ PYTTI_IMAGE_PROMPT_PATCHES = [
 
 PYTTI_ROTOSCOPER = SITE_PACKAGES / "pytti" / "rotoscoper.py"
 
+# get_frames' video conversion as upstream wrote it, and as earlier versions of this
+# script patched it (to a temp file published only if ffmpeg succeeded); installs
+# patched with either are upgraded in place
+_GET_FRAMES_UPSTREAM = (
+    '    in_fname = path\n'
+    '    out_fname = f"{path}_converted.mp4"\n'
+    '    if not path_exists(path + "_converted.mp4"):\n'
+    '        logger.debug(f"Converting {path}...")\n'
+    '        cmd = ["ffmpeg", "-i", in_fname]\n'
+    '        # if params is None:\n'
+    '        # subprocess.run(["ffmpeg", "-i", in_fname, out_fname])\n'
+    '        if params is not None:\n'
+    '            # https://trac.ffmpeg.org/wiki/ChangingFrameRate\n'
+    '            cmd += ["-filter:v", f"fps={params.frames_per_second}"]\n'
+    '\n'
+    '        # https://trac.ffmpeg.org/wiki/Encode/H.264\n'
+    '        cmd += [\n'
+    '            "-c:v",\n'
+    '            "libx264",\n'
+    '            "-crf",\n'
+    '            "17",  # = effectively lossless\n'
+    '            "-preset",\n'
+    '            "veryslow",  # = effectively lossless\n'
+    '            "-tune",\n'
+    '            "fastdecode",  # not sure this is what I want, zerolatency and stillimage might make sense? can experiment I guess?\n'
+    '            "-pix_fmt",\n'
+    '            "yuv420p",  # may be necessary for "dumb players"\n'
+    '            "-acodec",\n'
+    '            "copy",  # copy audio codec cause why not\n'
+    '            out_fname,\n'
+    '        ]\n'
+    '        logger.debug(cmd)\n'
+    '\n'
+    '        subprocess.run(cmd)\n'
+    '\n'
+    '        logger.debug(f"Converted {in_fname} to {out_fname}.")\n'
+    '\n'
+    '        # yeah I don\'t think this is actually true, but it probably should be.\n'
+    '        logger.warning(\n'
+    '            f"WARNING: future runs will automatically use {out_fname}, unless you delete it."\n'
+    '        )\n'
+)
+_GET_FRAMES_V1 = _GET_FRAMES_UPSTREAM.replace(
+    '            out_fname,\n'
+    '        ]\n'
+    '        logger.debug(cmd)\n'
+    '\n'
+    '        subprocess.run(cmd)\n',
+    '            "-y",\n'
+    '            out_fname + ".part.mp4",\n'
+    '        ]\n'
+    '        logger.debug(cmd)\n'
+    '\n'
+    '        subprocess.run(cmd, check=True)\n'
+    '        os.replace(out_fname + ".part.mp4", out_fname)\n',
+)
+
 PYTTI_ROTOSCOPER_PATCHES = [
     (
-        'import imageio, subprocess\n',
-        'import imageio, os, subprocess\n',
+        ('import imageio, subprocess\n', 'import imageio, os, subprocess\n'),
+        'import hashlib, imageio, imageio_ffmpeg, os, shutil, subprocess, tempfile\n'
+        'from pathlib import Path\n',
     ),
-    # Convert Video Source clips to a temp file and publish it only if ffmpeg
-    # succeeds, so an interrupted conversion is never reused as <video>_converted.mp4
+    # Video Source clips and video masks are converted before pytti reads them. Upstream
+    # wrote the copy next to the clip (failing in a read-only folder) and reused it even
+    # after the fps changed, copied the audio (which fails for Opus or PCM), failed on odd
+    # sizes and used x264's slowest preset. Convert without audio, cropped to even sizes,
+    # faster, into a per-user cache named after the clip and the settings, and publish
+    # the copy only if ffmpeg succeeds, so a failed or interrupted conversion is never reused.
     (
-        '            "copy",  # copy audio codec cause why not\n'
-        '            out_fname,\n'
-        '        ]\n'
+        (_GET_FRAMES_UPSTREAM, _GET_FRAMES_V1),
+        '    in_fname = path\n'
+        '    # libx264 can\'t encode odd sizes as yuv420p: crop the odd last column/row\n'
+        '    vf = "crop=trunc(iw/2)*2:trunc(ih/2)*2"\n'
+        '    if params is not None:\n'
+        '        # https://trac.ffmpeg.org/wiki/ChangingFrameRate\n'
+        '        vf = f"fps={params.frames_per_second},{vf}"\n'
+        '    # https://trac.ffmpeg.org/wiki/Encode/H.264\n'
+        '    args = [\n'
+        '        "-filter:v", vf,\n'
+        '        "-c:v", "libx264",\n'
+        '        "-crf", "17",  # = effectively lossless\n'
+        '        "-preset", "veryfast",  # much faster than veryslow; the crf sets the quality\n'
+        '        "-tune", "fastdecode",\n'
+        '        "-pix_fmt", "yuv420p",  # may be necessary for "dumb players"\n'
+        '        "-an",  # pytti reads only the frames\n'
+        '    ]\n'
+        '    # The copy is named after the clip\'s path, size and modification time and the\n'
+        '    # settings above, so an edited clip or another fps is converted again\n'
+        '    stat = os.stat(in_fname)\n'
+        '    key = f"{os.path.normcase(os.path.abspath(in_fname))}|{stat.st_size}|{stat.st_mtime_ns}|{args}"\n'
+        '    cache = Path(tempfile.gettempdir()) / "pytti-video-cache"\n'
+        '    name = f"{Path(in_fname).stem[:40]}_{hashlib.sha256(key.encode()).hexdigest()[:16]}.mp4"\n'
+        '    out_fname = str(cache / name)\n'
+        '    if not path_exists(out_fname):\n'
+        '        logger.info(f"Converting {in_fname}...")\n'
+        '        cache.mkdir(parents=True, exist_ok=True)\n'
+        '        part_fname = out_fname + ".part.mp4"\n'
+        '        # ffmpeg on PATH (the UI puts the one it uses first), else imageio-ffmpeg\'s\n'
+        '        ffmpeg = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()\n'
+        '        cmd = [ffmpeg, "-nostats", "-loglevel", "error", "-y", "-i", in_fname, *args, part_fname]\n'
         '        logger.debug(cmd)\n'
-        '\n'
-        '        subprocess.run(cmd)\n',
-        '            "copy",  # copy audio codec cause why not\n'
-        '            "-y",\n'
-        '            out_fname + ".part.mp4",\n'
-        '        ]\n'
-        '        logger.debug(cmd)\n'
-        '\n'
-        '        subprocess.run(cmd, check=True)\n'
-        '        os.replace(out_fname + ".part.mp4", out_fname)\n',
+        '        # No stdin, so a key pressed in the console can\'t end the conversion early\n'
+        '        try:\n'
+        '            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)\n'
+        '            os.replace(part_fname, out_fname)\n'
+        '        finally:\n'
+        '            if path_exists(part_fname):\n'
+        '                os.remove(part_fname)\n'
+        '        logger.debug(f"Converted {in_fname} to {out_fname}.")\n',
     ),
     # imageio reports a video's frame count as inf, which makes len() huge, so
     # pytti's end-of-video clamps never trigger and it reads past the last frame
@@ -295,6 +434,153 @@ PYTTI_PROMPT_PATCHES = [
     ),
 ]
 
+# ── pytti-core patches: AudioParse.py ─────────────────────────────────────────
+
+PYTTI_AUDIOPARSE = SITE_PACKAGES / "pytti" / "AudioParse.py"
+
+PYTTI_AUDIOPARSE_PATCHES = [
+    (
+        'import typing\n'
+        'import subprocess\n',
+        'import typing\n'
+        'import shutil\n'
+        'import subprocess\n'
+        'import imageio_ffmpeg\n',
+    ),
+    # Run the ffmpeg on PATH (the UI puts the one it uses first), else imageio-ffmpeg's,
+    # instead of failing with a bare FileNotFoundError when no "ffmpeg" is found. Keep its
+    # banner out of the log, and give it no stdin, so a key pressed in the console can't
+    # cut the audio short.
+    (
+        "        pipe = subprocess.Popen(['ffmpeg', '-i', input_audio,\n"
+        "                                 '-f', 's16le',\n"
+        "                                 '-acodec', 'pcm_s16le',\n"
+        "                                 '-ar', str(SAMPLERATE),\n"
+        "                                 '-ac', '1',\n"
+        "                                 '-'], stdout=subprocess.PIPE, bufsize=10 ** 8)\n",
+        "        ffmpeg = shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()\n"
+        "        pipe = subprocess.Popen([ffmpeg, '-nostats', '-loglevel', 'error', '-i', input_audio,\n"
+        "                                 '-f', 's16le',\n"
+        "                                 '-acodec', 'pcm_s16le',\n"
+        "                                 '-ar', str(SAMPLERATE),\n"
+        "                                 '-ac', '1',\n"
+        "                                 '-'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, bufsize=10 ** 8)\n",
+    ),
+    # An unreadable audio file gives no samples, which the old check (< 0) never caught
+    (
+        '        if len(self.audio_samples) < 0:\n'
+        '            raise RuntimeError("Audio samples are empty, assuming load failed")\n',
+        '        if len(self.audio_samples) < 1:\n'
+        '            raise RuntimeError(f"Could not read any audio from {input_audio}")\n',
+    ),
+    # An offset past the end of the audio raised NameError (duration) instead of this message
+    (
+        '            raise RuntimeError(f"Audio offset set at {offset}s but input audio is only {duration}s long")\n',
+        '            raise RuntimeError(f"Audio offset set at {offset}s but input audio is only {self.duration:.1f}s long")\n',
+    ),
+    # With offset 0, the band-maxima scan's last time step is the very end of a track whose
+    # length is a whole number of frames (e.g. 8 s at 12 fps), and filtering the empty
+    # window there crashed with "cannot reshape array of size 0"
+    (
+        '            sample_offset = int(t * SAMPLERATE)\n'
+        '            cur_maxima = bp_filtered(self.audio_samples[sample_offset:sample_offset + self.window_size], filters)\n',
+        '            sample_offset = int(t * SAMPLERATE)\n'
+        '            if sample_offset >= len(self.audio_samples):\n'
+        '                break  # the end of the track: no samples left\n'
+        '            cur_maxima = bp_filtered(self.audio_samples[sample_offset:sample_offset + self.window_size], filters)\n',
+    ),
+]
+
+# ── pytti-core patches: image_models/vqgan.py ─────────────────────────────────
+
+PYTTI_VQGAN = SITE_PACKAGES / "pytti" / "image_models" / "vqgan.py"
+
+PYTTI_VQGAN_PATCHES = [
+    (
+        'import urllib.request\n'
+        'from tqdm import tqdm\n',
+        'import urllib.request\n'
+        'import zipfile\n'
+        'from tqdm import tqdm\n',
+    ),
+    # Models were downloaded straight to their final path, and only a missing file is
+    # downloaded again, so an interrupted download left a cut-off model that every later
+    # VQGAN render failed on. Download to a temp file and move it into place only when it
+    # has the full size.
+    (
+        '        with open(dest, "wb") as output, tqdm(total=file_size) as loop:\n'
+        '            while True:\n'
+        '                buffer = source.read(8192)\n'
+        '                if not buffer:\n'
+        '                    break\n'
+        '\n'
+        '                output.write(buffer)\n'
+        '                loop.update(len(buffer))\n'
+        '\n'
+        '        return os.path.getsize(dest) == file_size\n',
+        '        part = f"{dest}.part"\n'
+        '        try:\n'
+        '            with open(part, "wb") as output, tqdm(total=file_size) as loop:\n'
+        '                while True:\n'
+        '                    buffer = source.read(8192)\n'
+        '                    if not buffer:\n'
+        '                        break\n'
+        '\n'
+        '                    output.write(buffer)\n'
+        '                    loop.update(len(buffer))\n'
+        '\n'
+        '            complete = os.path.getsize(part) == file_size\n'
+        '            if complete:\n'
+        '                os.replace(part, dest)\n'
+        '        finally:\n'
+        '            if os.path.exists(part):\n'
+        '                os.remove(part)\n'
+        '        return complete\n'
+        '\n'
+        '\n'
+        'def _checkpoint_damaged(path):\n'
+        '    """True if a checkpoint is cut off, corrupted or isn\'t a checkpoint at all (e.g. an\n'
+        '    error page), rather than a whole file that failed to load for another reason"""\n'
+        '    try:\n'
+        '        with open(path, "rb") as f:\n'
+        '            head = f.read(4)\n'
+        '        if head == b"PK\\x03\\x04":\n'
+        '            # zip format: a cut-off file has lost the central directory at its end\n'
+        '            zipfile.ZipFile(path).close()\n'
+        '            return False\n'
+        '    except OSError:\n'
+        '        return False  # can\'t tell\n'
+        '    except Exception:\n'
+        '        # zipfile can\'t read the central directory. Besides BadZipFile, a corrupted one\n'
+        '        # can raise e.g. UnicodeDecodeError or NotImplementedError.\n'
+        '        return True\n'
+        '    # the legacy format starts with a pickle header\n'
+        '    return not head.startswith(b"\\x80")\n',
+    ),
+    # A model cut off before the patch above (or damaged on disk) fails to load on every
+    # VQGAN render, with a torch error that doesn't name the file. Delete it so the next
+    # render downloads it again; other load errors (e.g. torch refusing a whole file) are
+    # left as they are.
+    (
+        '        VQGAN_MODEL, VQGAN_IS_GUMBEL = load_vqgan_model(vqgan_config, vqgan_checkpoint)\n'
+        '        with vram_usage_mode("VQGAN"):\n',
+        '        try:\n'
+        '            VQGAN_MODEL, VQGAN_IS_GUMBEL = load_vqgan_model(vqgan_config, vqgan_checkpoint)\n'
+        '        except Exception as e:\n'
+        '            if not _checkpoint_damaged(vqgan_checkpoint):\n'
+        '                raise\n'
+        '            try:\n'
+        '                os.remove(vqgan_checkpoint)\n'
+        '                fix = "It was deleted, so the next render downloads it again."\n'
+        '            except OSError:\n'
+        '                fix = "Delete it, and the next render downloads it again."\n'
+        '            raise RuntimeError(\n'
+        '                f"The VQGAN model file {vqgan_checkpoint} is incomplete or damaged. {fix}"\n'
+        '            ) from e\n'
+        '        with vram_usage_mode("VQGAN"):\n',
+    ),
+]
+
 TARGETS = [
     (PYTTI_WORKHORSE, PYTTI_WORKHORSE_PATCHES, "workhorse.py"),
     (PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py"),
@@ -304,6 +590,8 @@ TARGETS = [
     (PYTTI_LATENTLOSS, PYTTI_IMAGE_PROMPT_PATCHES, "LatentLossClass.py"),
     (PYTTI_ROTOSCOPER, PYTTI_ROTOSCOPER_PATCHES, "rotoscoper.py"),
     (PYTTI_PROMPT, PYTTI_PROMPT_PATCHES, "Prompt.py"),
+    (PYTTI_AUDIOPARSE, PYTTI_AUDIOPARSE_PATCHES, "AudioParse.py"),
+    (PYTTI_VQGAN, PYTTI_VQGAN_PATCHES, "vqgan.py"),
 ]
 
 # ── Apply patches ───────────────────────────────────────────────────────────
@@ -312,7 +600,10 @@ def plan_patches(target, patches, label):
     """Return (patched text or None if already up to date, problems) without writing anything.
 
     A patch's old text can be a tuple of alternatives, e.g. the upstream code and the
-    code an earlier version of a patch produced.
+    code an earlier version of a patch produced. When a patch's new text changes, keep
+    the text it replaces as an alternative, or installs patched with it can't be
+    upgraded. An old text must not occur in its own new text, or it is applied again on
+    every run.
     """
     if not target.exists():
         return None, [f"{label}: {target} not found. Is pytti-core installed?"]
@@ -336,11 +627,15 @@ def plan_patches(target, patches, label):
 def main():
     quiet = "--quiet" in sys.argv
     planned, problems = [], []
-    for target, patches, label in TARGETS:
-        text, file_problems = plan_patches(target, patches, label)
-        problems += file_problems
-        if text is not None:
-            planned.append((target, text, label))
+    try:
+        for target, patches, label in TARGETS:
+            text, file_problems = plan_patches(target, patches, label)
+            problems += file_problems
+            if text is not None:
+                planned.append((target, text, label))
+    except OSError as e:
+        print(f"  ERROR: Could not read {target}: {e.strerror or e}")
+        return 2
 
     # Several patches depend on each other across files, so apply all or nothing
     if problems:
@@ -349,9 +644,32 @@ def main():
             print(f"    {problem}")
         return 1
 
-    for target, text, label in planned:
-        target.write_text(text, encoding="utf-8")
-        print(f"  Patched {label}")
+    # Write every file under a temp name first, then swap them all in: a file that can't
+    # be written (read-only, or locked by another program) then usually leaves nothing
+    # changed, and an interrupted write never leaves a half-written file. Files already
+    # swapped in count as patched the next time this runs.
+    temps = [target.with_name(target.name + ".tmp") for target, _, _ in planned]
+    swapped = 0
+    try:
+        for (target, text, _), temp in zip(planned, temps):
+            if not os.access(target, os.W_OK):
+                raise PermissionError(errno.EACCES, "The file is read-only")
+            temp.write_text(text, encoding="utf-8")
+        for (target, _, label), temp in zip(planned, temps):
+            os.replace(temp, target)
+            swapped += 1
+            print(f"  Patched {label}")
+    except OSError as e:
+        print(f"  ERROR: Could not write {target}: {e.strerror or e}")
+        if not swapped:
+            print("  No files were changed.")
+        return 2
+    finally:
+        for temp in temps:
+            try:
+                temp.unlink()
+            except OSError:
+                pass  # swapped in, or never written
     if not planned and not quiet:
         print("  All patches already applied.")
     return 0
