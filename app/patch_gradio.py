@@ -604,10 +604,65 @@ PYTTI_AUDIOPARSE_PATCHES = [
 
 PYTTI_VQGAN = SITE_PACKAGES / "pytti" / "image_models" / "vqgan.py"
 
+# The download as the previous version of this script patched it, checking only the
+# size; installs patched with it are upgraded in place
+_VQGAN_DOWNLOAD_V1 = (
+    '        part = f"{dest}.part"\n'
+    '        try:\n'
+    '            with open(part, "wb") as output, tqdm(total=file_size) as loop:\n'
+    '                while True:\n'
+    '                    buffer = source.read(8192)\n'
+    '                    if not buffer:\n'
+    '                        break\n'
+    '\n'
+    '                    output.write(buffer)\n'
+    '                    loop.update(len(buffer))\n'
+    '\n'
+    '            complete = os.path.getsize(part) == file_size\n'
+    '            if complete:\n'
+    '                os.replace(part, dest)\n'
+    '        finally:\n'
+    '            if os.path.exists(part):\n'
+    '                os.remove(part)\n'
+    '        return complete\n'
+    '\n'
+    '\n'
+    'def _checkpoint_damaged(path):\n'
+    '    """True if a checkpoint is cut off, corrupted or isn\'t a checkpoint at all (e.g. an\n'
+    '    error page), rather than a whole file that failed to load for another reason"""\n'
+    '    try:\n'
+    '        with open(path, "rb") as f:\n'
+    '            head = f.read(4)\n'
+    '        if head == b"PK\\x03\\x04":\n'
+    '            # zip format: a cut-off file has lost the central directory at its end\n'
+    '            zipfile.ZipFile(path).close()\n'
+    '            return False\n'
+    '    except OSError:\n'
+    '        return False  # can\'t tell\n'
+    '    except Exception:\n'
+    '        # zipfile can\'t read the central directory. Besides BadZipFile, a corrupted one\n'
+    '        # can raise e.g. UnicodeDecodeError or NotImplementedError.\n'
+    '        return True\n'
+    '    # the legacy format starts with a pickle header\n'
+    '    return not head.startswith(b"\\x80")\n'
+)
+
 PYTTI_VQGAN_PATCHES = [
+    # hashlib and urllib.parse for the download check below, zipfile for _checkpoint_damaged.
+    # The second old text is the imports as the previous version of this script patched them.
     (
-        'import urllib.request\n'
-        'from tqdm import tqdm\n',
+        (
+            'from omegaconf import OmegaConf\n'
+            'import urllib.request\n'
+            'from tqdm import tqdm\n',
+            'from omegaconf import OmegaConf\n'
+            'import urllib.request\n'
+            'import zipfile\n'
+            'from tqdm import tqdm\n',
+        ),
+        'from omegaconf import OmegaConf\n'
+        'import hashlib\n'
+        'import urllib.parse\n'
         'import urllib.request\n'
         'import zipfile\n'
         'from tqdm import tqdm\n',
@@ -615,19 +670,25 @@ PYTTI_VQGAN_PATCHES = [
     # Models were downloaded straight to their final path, and only a missing file is
     # downloaded again, so an interrupted download left a cut-off model that every later
     # VQGAN render failed on. Download to a temp file and move it into place only when it
-    # has the full size.
+    # has the full size and, for the files model_mirror.py lists, the mirror's SHA-256 (the
+    # original sources serve the same files). Loading a checkpoint unpickles it, which can
+    # run code, so a file that was changed on the way is deleted with an error instead.
     (
-        '        with open(dest, "wb") as output, tqdm(total=file_size) as loop:\n'
-        '            while True:\n'
-        '                buffer = source.read(8192)\n'
-        '                if not buffer:\n'
-        '                    break\n'
-        '\n'
-        '                output.write(buffer)\n'
-        '                loop.update(len(buffer))\n'
-        '\n'
-        '        return os.path.getsize(dest) == file_size\n',
+        (
+            '        with open(dest, "wb") as output, tqdm(total=file_size) as loop:\n'
+            '            while True:\n'
+            '                buffer = source.read(8192)\n'
+            '                if not buffer:\n'
+            '                    break\n'
+            '\n'
+            '                output.write(buffer)\n'
+            '                loop.update(len(buffer))\n'
+            '\n'
+            '        return os.path.getsize(dest) == file_size\n',
+            _VQGAN_DOWNLOAD_V1,
+        ),
         '        part = f"{dest}.part"\n'
+        '        digest = hashlib.sha256()\n'
         '        try:\n'
         '            with open(part, "wb") as output, tqdm(total=file_size) as loop:\n'
         '                while True:\n'
@@ -636,15 +697,39 @@ PYTTI_VQGAN_PATCHES = [
         '                        break\n'
         '\n'
         '                    output.write(buffer)\n'
+        '                    digest.update(buffer)\n'
         '                    loop.update(len(buffer))\n'
         '\n'
         '            complete = os.path.getsize(part) == file_size\n'
+        '            expected = _mirror_sha256(dest)\n'
+        '            if complete and expected and digest.hexdigest() != expected:\n'
+        '                host = urllib.parse.urlsplit(url).hostname\n'
+        '                raise RuntimeError(\n'
+        '                    f"The download of {os.path.basename(dest)} from {host} doesn\'t match its "\n'
+        '                    "checksum. It was deleted, so the next render downloads it again. If this "\n'
+        '                    "keeps happening, try another network, or try later, when the model "\n'
+        '                    "mirror on huggingface.co can be reached."\n'
+        '                )\n'
         '            if complete:\n'
         '                os.replace(part, dest)\n'
         '        finally:\n'
         '            if os.path.exists(part):\n'
         '                os.remove(part)\n'
         '        return complete\n'
+        '\n'
+        '\n'
+        'def _mirror_sha256(dest):\n'
+        '    """The SHA-256 that PyTTI Portable\'s model mirror lists for a VQGAN file, which pytti\n'
+        '    saves as <model>.yaml or <model>.ckpt, or None if it lists none"""\n'
+        '    try:\n'
+        '        from pytti.model_mirror import VQGAN_MODELS\n'
+        '    except ImportError:\n'
+        '        return None\n'
+        '    model, ext = os.path.splitext(os.path.basename(dest))\n'
+        '    if model not in VQGAN_MODELS or ext not in (".yaml", ".ckpt"):\n'
+        '        return None\n'
+        '    config, checkpoint = VQGAN_MODELS[model]\n'
+        '    return (config if ext == ".yaml" else checkpoint)[1]\n'
         '\n'
         '\n'
         'def _checkpoint_damaged(path):\n'
@@ -707,6 +792,16 @@ PYTTI_VQGAN_PATCHES = [
     (
         '        "http://eaidata.bmk.sh/data/Wikiart_16384/wikiart_f16_16384_8145600.ckpt"\n',
         '        "https://github.com/pixray/pixray/releases/download/v1.7.1/vqgan_wikiart_16384.ckpt"\n',
+    ),
+    # coco's files over HTTPS. batbot.ai redirected the plain HTTP request there, but only
+    # after that first request had gone out unencrypted.
+    (
+        '    "coco": ["http://batbot.ai/models/VQGAN/coco_first_stage.yaml"],\n',
+        '    "coco": ["https://batbot.ai/models/VQGAN/coco_first_stage.yaml"],\n',
+    ),
+    (
+        '    "coco": ["http://batbot.ai/models/VQGAN/coco_first_stage.ckpt"],\n',
+        '    "coco": ["https://batbot.ai/models/VQGAN/coco_first_stage.ckpt"],\n',
     ),
 ]
 

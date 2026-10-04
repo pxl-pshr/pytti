@@ -136,4 +136,4 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE). [NOTICE](NOTICE) lists the parts derived from pytti-core and who holds their copyright.

@@ -144,6 +144,24 @@ Check 'Visual C++ runtime' {
     }
 }
 
+Check 'Smart App Control' {
+    # Windows 11's Smart App Control blocks unsigned files that have no cloud reputation,
+    # among them PyTorch's DLLs and most compiled Python modules. 0 = off, 1 = on,
+    # 2 = evaluation, which Windows may switch to on later. Windows versions without
+    # Smart App Control don't have the value.
+    $policy = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+    $state = if (Test-Path $policy) { (Get-ItemProperty $policy).VerifiedAndReputablePolicyState }
+    $turnOff = 'To turn it off: Windows Security > App & browser control > Smart App Control settings > Off.'
+    $oneWay = 'On many Windows versions it can''t be turned back on without reinstalling Windows.'
+    if ($state -eq 1) {
+        Warn 'Smart App Control is on' @('It blocks files PyTTI needs, such as PyTorch''s unsigned DLLs, so renders fail with "WinError 4551".', $turnOff, $oneWay)
+    } elseif ($state -eq 2) {
+        Warn 'Smart App Control is in evaluation mode' @('Windows may switch it on later. It then blocks files PyTTI needs,', 'such as PyTorch''s unsigned DLLs, and renders fail with "WinError 4551".', $turnOff, $oneWay)
+    } elseif ($state -eq 0) {
+        Pass 'Smart App Control is off'
+    }
+}
+
 Check 'Git' {
     # Only updating with git pull needs Git; the install itself doesn't
     if (Get-Command git -ErrorAction SilentlyContinue) {

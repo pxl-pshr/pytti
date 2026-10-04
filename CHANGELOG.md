@@ -7,6 +7,7 @@ What changed in each version of PyTTI Portable, newest first.
 ### Added
 
 - Load Config starts with a (defaults) entry, which fills in the settings from `config/default.yaml` with a blank Config Name. A page reload brings back the preset last loaded or saved, as it is on disk, instead of resetting every field to the defaults.
+- The system check warns when Windows' Smart App Control is on or in evaluation mode. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551".
 
 ### Changed
 
@@ -17,6 +18,7 @@ What changed in each version of PyTTI Portable, newest first.
 - Encode Video, Video Source mode and audio input use ffmpeg 7.1 instead of 4.2.2 from 2019 (imageio-ffmpeg 0.6.0). After updating, PyTTI replaces its copy, `python\ffmpeg.exe`, the next time it uses ffmpeg.
 - Save and Start Render ask before replacing a preset the page didn't load or save, such as one whose name was typed in. Pressing again replaces it. Names that differ only in case count as the same preset, as they do in Windows.
 - Start Render reports mistakes in weight, prompt and camera move expressions, such as an unclosed bracket or a misspelled name, before any model loads. Load and Save mention them too.
+- `LICENSE` holds only the standard MIT text, so GitHub recognizes the license. The notice for the parts derived from pytti-core moved to `NOTICE`.
 
 ### Fixed
 
@@ -28,6 +30,7 @@ What changed in each version of PyTTI Portable, newest first.
 - Presets are checked for settings that could run code on the PC, when loaded and before a render: a `hydra:` or `defaults:` section, `${...}` in a prompt, weight or camera move, and expressions that use more than numbers, arithmetic, `t`, math functions and audio variables, such as `np.` calls. Start Render refuses such a preset, and Save mentions the problem. A `models_parent_dir` other than the default gets a note, since VQGAN model files can run code too. README.md and PROMPTING.md say presets can run code and list what expressions may use.
 - Pillow 10.4.0 replaces 9.4.0, whose WebP decoder had a heap overflow that a crafted image could exploit (CVE-2023-4863). pytti opens init images, image prompts, masks and target palettes with Pillow, including images it downloads from a URL.
 - hydra-core 1.3.7 replaces 1.3.2. It adds Hydra's checks against dangerous targets in configs, which Hydra describes as defense in depth rather than a complete security boundary.
+- When the model mirror can't be reached, VQGAN files downloaded from their original sources are checked against the mirror's SHA-256 before PyTorch loads them, and coco downloads over HTTPS. A file that doesn't match is deleted with an error.
 
 ## [1.1.0-beta] - 2026-10-04
 
