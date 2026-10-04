@@ -157,5 +157,5 @@ models_parent_dir: ${user_cache:}
 ### Performance tuning ###
 ##########################
 
-gradient_accumulation_steps: 2  # 1 is faster and gives the same result, but needs about 17 GB of GPU memory instead of 9
+gradient_accumulation_steps: 1  # fastest; 2 gives the same result with about 9 GB of GPU memory instead of 17, for GPUs under 24 GB
 device: 0

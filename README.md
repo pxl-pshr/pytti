@@ -36,7 +36,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 ## Requirements
 
 - Windows 10 or 11 (64-bit)
-- NVIDIA GPU from the GTX 10xx series through RTX 50xx, with 6 GB or more of video memory recommended
+- NVIDIA GPU from the GTX 10xx series through RTX 50xx, with 6 GB or more of video memory recommended. The default settings need about 17 GB; on GPUs with less than 24 GB, set Gradient Accumulation Steps to 2, which gives the same result with about 9 GB
 - NVIDIA driver 528.33 or newer (570.65 or newer recommended)
 - [Git](https://git-scm.com), only to install with `git clone` and update with `git pull`
 - [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
@@ -129,8 +129,8 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 
 ## Troubleshooting
 
-- **Out of GPU memory**: lower the width and height, use fewer cutouts or CLIP models, or raise `gradient_accumulation_steps`.
-- **Renders are slow**: on a GPU with 24 GB or more, set `gradient_accumulation_steps` to 1. It is about 25% faster than 2, gives the same result, and needs about 17 GB with the default settings instead of about 9 GB. If a render is far slower than usual, check Task Manager > Performance > GPU: rising "Shared GPU memory" means the render no longer fits in the GPU's memory and Windows is using system RAM; use the out-of-memory fixes above.
+- **Out of GPU memory**: raise `gradient_accumulation_steps` (Gradient Accumulation Steps on the Steps & CLIP tab) to 2 or more. It gives the same result with less memory: about 9 GB at 2 instead of about 17 GB at 1, the default, with the default settings. Beyond that, lower the width and height, or use fewer cutouts or CLIP models.
+- **Renders are slow**: check Task Manager > Performance > GPU. Rising "Shared GPU memory" means the render no longer fits in the GPU's memory and Windows is using system RAM; use the out-of-memory fixes above. Otherwise, `gradient_accumulation_steps` at 1 is the fastest setting, about 25% faster than 2.
 - **3D mode fails with `... to have 128 channels, but got N channels instead`**: the AdaBins depth model, which 3D mode and `depth_stabilization_weight` use, needs `(width * pixel_size) // 32` times `(height * pixel_size) // 32` to be at least 129. With `pixel_size` 1, 512×288 works and 512×256 doesn't. The UI checks this before it starts a render.
 - **Start Render says a setting could run code on this PC**: pytti runs the expressions in weights and camera moves as Python code, and Hydra runs what a preset's `hydra:` section names, so a preset can do anything your Windows account can. Only render presets from people you trust. PyTTI checks a preset when you load it and before it renders: expressions may use numbers, arithmetic, `t`, math functions such as `sin()` and audio variables ([PROMPTING.md](PROMPTING.md#weights-that-change-over-time) lists them), and Start Render refuses a preset with a `hydra:` or `defaults:` section, or with `${...}` in a prompt, weight or camera move. Fix the setting the message names, or delete the section from the preset's file in `app/config/conf`.
 - **A render stopped partway** (Stop Render, an error, a closed window or a restart): press **Resume Render** on the Run tab to continue the last render from its newest backup, in the same run folder and with the settings it was started with. To continue an earlier one, pick it in the Run list on the Output tab and press Resume Render there. Renders keep backups from their first saved frame on; most renders made before Resume Render was added have none.

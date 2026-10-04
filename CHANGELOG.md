@@ -15,8 +15,9 @@ What changed in each version of PyTTI Portable, newest first.
 
 ### Changed
 
-- Faster renders that need less GPU memory: speed patches for pytti-core and kornia. Palette lookups and cutout sampling do less work and wait less on the GPU, and on GPUs with more than 20 GB the CLIP image encoders run as CUDA graphs. With Gradient Accumulation Steps at 2, the default, a render with the default settings needs about 9 GB of GPU memory instead of about 14 GB.
-- The Gradient Accumulation Steps help text gives the memory used at 1 and 2, and the README has a troubleshooting entry for slow renders.
+- Faster renders that need less GPU memory: speed patches for pytti-core and kornia. Palette lookups and cutout sampling do less work and wait less on the GPU, and on GPUs with more than 20 GB the CLIP image encoders run as CUDA graphs. With Gradient Accumulation Steps at 2, a render with the default settings needs about 9 GB of GPU memory instead of about 14 GB.
+- Gradient Accumulation Steps defaults to 1 instead of 2: about 25% faster, with the same result, but a render with the default settings needs about 17 GB of GPU memory. On GPUs with less than 24 GB, set it to 2. Presets keep the value they were saved with.
+- The Gradient Accumulation Steps help text gives the memory used at 1 and 2, and the README has troubleshooting entries for running out of GPU memory and for slow renders.
 - Installing no longer needs Git. pytti-core, AdaBins, GMA, taming-transformers and CLIP install from wheels on PyTTI Portable's Hugging Face mirror, each checked against its SHA-256, instead of from their GitHub repositories. Git is only needed to install with `git clone` and update with `git pull`.
 - `install.bat` installs every package at the version this release was tested with, listed in `app\constraints.txt`. That includes about 100 packages it doesn't name itself, which until now came in at whatever version was newest on the day of the install. pip is pinned too.
 - Encode Video, Video Source mode and audio input use ffmpeg 7.1 instead of 4.2.2 from 2019 (imageio-ffmpeg 0.6.0). After updating, PyTTI replaces its copy, `python\ffmpeg.exe`, the next time it uses ffmpeg.
