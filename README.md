@@ -10,14 +10,14 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 [![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
 
 <p align="center">
-  <img src="examples/example-01.png" width="24%" />
-  <img src="examples/example-07.png" width="24%" />
-  <img src="examples/example-11.png" width="24%" />
-  <img src="examples/example-09.png" width="24%" />
+  <img src="docs/images/example-01.png" width="24%" />
+  <img src="docs/images/example-07.png" width="24%" />
+  <img src="docs/images/example-11.png" width="24%" />
+  <img src="docs/images/example-09.png" width="24%" />
 </p>
 
 <p align="center">
-  <img src="examples/ui.png" width="80%" />
+  <img src="docs/images/ui.png" width="80%" />
 </p>
 
 ## Features
@@ -111,7 +111,7 @@ pytti/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
 ├── tests/               # Tests that need no GPU (see Tests; not in the ZIP download)
-└── examples/            # Sample renders (not in the ZIP download)
+└── docs/images/         # Pictures for this README (not in the ZIP download)
 ```
 
 ## How It Works

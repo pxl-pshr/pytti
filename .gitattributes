@@ -5,4 +5,4 @@
 # images): left out of GitHub's Download ZIP and release source archives, but not git clone
 /tests export-ignore
 /.github export-ignore
-/examples export-ignore
+/docs export-ignore

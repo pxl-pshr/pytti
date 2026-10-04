@@ -327,7 +327,7 @@ def test_clean_path(tmp_path):
     assert ui._clean_path(f' "{image}" ') == str(image)
     assert ui._clean_path("https://example.com/a.png") == "https://example.com/a.png"
     # pytti opens files from the render's folder, so a relative path is made absolute if found
-    assert ui._clean_path("examples/ui.png") == str((ui.PORTABLE_ROOT / "examples" / "ui.png").resolve())
+    assert ui._clean_path("docs/images/ui.png") == str((ui.PORTABLE_ROOT / "docs" / "images" / "ui.png").resolve())
     assert ui._clean_path("nowhere/a.png") == "nowhere/a.png"
 
 
