@@ -819,8 +819,9 @@ PYTTI_EMBEDDER = SITE_PACKAGES / "pytti" / "Perceptor" / "Embedder.py"
 
 PYTTI_EMBEDDER_PATCHES = [
     # CUDA graphs of the CLIP image encoders: each replays an encoder's forward and backward
-    # kernels with one launch instead of thousands. Only on GPUs with 20 GB or more, since a
-    # graph keeps its own memory; a shape whose capture fails runs as before.
+    # kernels with one launch instead of thousands. Only on GPUs that report 20 GiB or more
+    # (24 GB cards and up; cards sold as 20 GB report a little less), since a graph keeps its
+    # own memory; a shape whose capture fails runs as before.
     (
         '}\n'
         '\n'

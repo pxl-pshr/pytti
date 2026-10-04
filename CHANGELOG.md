@@ -6,8 +6,9 @@ What changed in each version of PyTTI Portable, newest first.
 
 ### Changed
 
-- Faster renders: speed patches for pytti-core and kornia. Palette lookups and cutout sampling do less work and wait less on the GPU, and on GPUs with 20 GB or more the CLIP image encoders run as CUDA graphs.
+- Faster renders that need less GPU memory: speed patches for pytti-core and kornia. Palette lookups and cutout sampling do less work and wait less on the GPU, and on GPUs with more than 20 GB the CLIP image encoders run as CUDA graphs. With Gradient Accumulation Steps at 2, the default, a render with the default settings needs about 9 GB of GPU memory instead of about 14 GB.
 - The Gradient Accumulation Steps help text gives the memory used at 1 and 2, and the README has a troubleshooting entry for slow renders.
+- Installing no longer needs Git. pytti-core, AdaBins, GMA, taming-transformers and CLIP install from wheels on PyTTI Portable's Hugging Face mirror, each checked against its SHA-256, instead of from their GitHub repositories. Git is only needed to install with `git clone` and update with `git pull`.
 
 ## [1.1.0-beta] - 2026-10-04
 

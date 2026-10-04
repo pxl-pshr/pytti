@@ -37,7 +37,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - Windows 10 or 11 (64-bit)
 - NVIDIA GPU from the GTX 10xx series through RTX 50xx, with 6 GB or more of video memory recommended
 - NVIDIA driver 528.33 or newer (570.65 or newer recommended)
-- [Git](https://git-scm.com) installed and on PATH
+- [Git](https://git-scm.com), only to install with `git clone` and update with `git pull`
 - [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
 - About 17 GB of free disk space to install. Afterwards the `python` folder takes about 6.5 GB, and pip's download cache and the models take more (see [Disk space](#disk-space))
 - 8 GB or more of RAM recommended

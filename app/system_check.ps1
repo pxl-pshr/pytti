@@ -145,10 +145,11 @@ Check 'Visual C++ runtime' {
 }
 
 Check 'Git' {
+    # Only updating with git pull needs Git; the install itself doesn't
     if (Get-Command git -ErrorAction SilentlyContinue) {
         Pass "Git $((git --version) -replace '^git version ', '')"
     } else {
-        Fail 'Git is not installed or not on PATH' 'Install it from https://git-scm.com, then run install.bat again.'
+        Write-Check 'NOTE' Cyan 'Git is not installed' 'Not needed to install or run PyTTI. To update with git pull, install it from https://git-scm.com.'
     }
 }
 

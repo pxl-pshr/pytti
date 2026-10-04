@@ -53,16 +53,14 @@ set "PATCH=%errorlevel%"
 if "%PATCH%"=="0" goto :check_packages
 :: patch_gradio.py exits with 2 when it can't read or write a file, and with 1 when
 :: pytti-core doesn't match the version its patches expect. In the printed command, -s and
-:: --isolated keep the user's own Python packages and pip settings out, as install.bat does.
-:: --no-build-isolation builds with the installed setuptools instead of starting a second
-:: pip, which would read those settings again
+:: --isolated keep the user's own Python packages and pip settings out, as install.bat does
 echo.
 if "%PATCH%"=="2" (
     echo  %RED%Could not patch pytti-core: a file could not be read or written.%R%
     echo  %DIM%Close other PyTTI windows, or wait a minute if antivirus is scanning, then run launch.bat again.%R%
 ) else (
     echo  %RED%Could not patch pytti-core. To reinstall it, open a command prompt in the pytti folder and run:%R%
-    echo    python\python.exe -s -m pip install --isolated --no-build-isolation --force-reinstall --no-deps git+https://github.com/pytti-tools/pytti-core.git@b5070aaeab05204f6eee0ff81c657bc486b9cdce
+    echo    python\python.exe -s -m pip install --isolated --force-reinstall --no-deps "pyttitools-core @ https://huggingface.co/pxlpshr/pytti-models/resolve/main/wheels/pyttitools_core-0.0.1-py3-none-any.whl#sha256=b8c5c4f5f3187cf5700861fc7b776f5a79a0e85e8f66ad5b7eb065c17d108267"
     echo  %DIM%Then run launch.bat again. If that fails, delete the python folder and run install.bat again.%R%
 )
 echo.

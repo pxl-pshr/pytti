@@ -203,8 +203,8 @@ if defined PYTTI_UPDATE (
 echo.
 
 echo %DIM%       [+] setuptools, wheel%R%
-:: The git packages below are built with these. setuptools before 70.1 gets its
-:: bdist_wheel command from wheel, which newer wheel releases are set to remove
+:: setuptools before 70.1 gets its bdist_wheel command from wheel, which newer wheel
+:: releases are set to remove
 python\python.exe -m pip install --no-warn-script-location "setuptools<70" wheel==0.48.0
 if errorlevel 1 goto :error
 
@@ -223,28 +223,40 @@ echo %DIM%       [+] dependencies%R%
 python\python.exe -m pip install --no-warn-script-location numpy==1.23.5 ipython==8.39.0 scipy==1.15.3 requests==2.34.2 gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml==6.0.3 omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex==2026.9.29 tqdm==4.70.1 loguru==0.7.3 Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex==0.12.0 gdown==4.7.1 PyGLM==2.8.3 tensorboard==2.10.1
 if errorlevel 1 goto :error
 
-:: The git packages are pinned to commits. pip keeps an installed git package whose
-:: version matches, even from another commit, so a new commit here reaches existing
-:: installs only if the package's version changes too
+:: These five packages are not on PyPI. They install from wheels built at these commits and
+:: kept on PyTTI Portable's Hugging Face mirror (or the host in HF_ENDPOINT); pip checks
+:: each wheel against its SHA-256:
+::   pyttitools-adabins              pytti-tools/AdaBins@9b57712c1257d95df2966018952f4b8151cdf88a
+::   pyttitools-gma                  pytti-tools/GMA@27e8b4ee10067a86f63523ef6a35b4566c296526
+::   pyttitools-taming-transformers  pytti-tools/taming-transformers@f44c0b1e5b15020054e5e1ca10c465d832fd911b
+::   clip                            openai/CLIP@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+::   pyttitools-core                 pytti-tools/pytti-core@b5070aaeab05204f6eee0ff81c657bc486b9cdce
+:: pip keeps an installed package whose version matches, so a new wheel here reaches
+:: existing installs only if the package's version changes too
+set "PYTTI_HF=https://huggingface.co"
+if defined HF_ENDPOINT set "PYTTI_HF=%HF_ENDPOINT%"
+if "%PYTTI_HF:~-1%"=="/" set "PYTTI_HF=%PYTTI_HF:~0,-1%"
+set "WHEELS=%PYTTI_HF%/pxlpshr/pytti-models/resolve/main/wheels"
+
 echo %DIM%       [+] AdaBins%R%
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/AdaBins.git@9b57712c1257d95df2966018952f4b8151cdf88a
+python\python.exe -m pip install --no-warn-script-location "pyttitools-adabins @ %WHEELS%/pyttitools_adabins-0.0.1-py3-none-any.whl#sha256=0506d733c4cb5ca87684cafac16ee040f65c35cb377463bbbc657f9c7e2dc5d9"
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] GMA%R%
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/GMA.git@27e8b4ee10067a86f63523ef6a35b4566c296526
+python\python.exe -m pip install --no-warn-script-location "pyttitools-gma @ %WHEELS%/pyttitools_gma-0.0.1-py3-none-any.whl#sha256=900f72586819230e05ac8fcb051ee5a0eb4cfb60de939f0bdf970a2edb63fc02"
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] taming-transformers%R%
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/taming-transformers.git@f44c0b1e5b15020054e5e1ca10c465d832fd911b
+python\python.exe -m pip install --no-warn-script-location "pyttitools-taming-transformers @ %WHEELS%/pyttitools_taming_transformers-0.0.1-py3-none-any.whl#sha256=d0bf08df0053c68932ed965396bcde74468bddb89122dc39819dcc91b4663bf3"
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] CLIP%R%
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
+python\python.exe -m pip install --no-warn-script-location "clip @ %WHEELS%/clip-1.0-py3-none-any.whl#sha256=24d6d72bf73d81012581a3add81344ff3f05d854161fd94f18dbef6274735a40"
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] pytti-core%R%
 :: Pinned: app\patch_gradio.py patches this exact version
-python\python.exe -m pip install --no-warn-script-location git+https://github.com/pytti-tools/pytti-core.git@b5070aaeab05204f6eee0ff81c657bc486b9cdce
+python\python.exe -m pip install --no-warn-script-location "pyttitools-core @ %WHEELS%/pyttitools_core-0.0.1-py3-none-any.whl#sha256=b8c5c4f5f3187cf5700861fc7b776f5a79a0e85e8f66ad5b7eb065c17d108267"
 if errorlevel 1 goto :error
 
 call :ok
@@ -289,15 +301,14 @@ exit /b 0
 :: patch_gradio.py exits with 2 when it can't read or write a file, and with 1 when
 :: pytti-core doesn't match the version its patches expect. The printed command runs
 :: without the settings at the top of this file, so -s and --isolated keep the user's own
-:: Python packages and pip settings out. --no-build-isolation builds with the setuptools
-:: from step 5 instead of starting a second pip, which would read those settings again
+:: Python packages and pip settings out
 echo.
 if "%PATCH%"=="2" (
     echo %RED%  Could not patch pytti-core: a file could not be read or written.%R%
     echo %DIM%  Close other PyTTI windows, or wait a minute if antivirus is scanning, then run install.bat again.%R%
 ) else (
     echo %RED%  Could not patch pytti-core. To reinstall it, open a command prompt in the pytti folder and run:%R%
-    echo     python\python.exe -s -m pip install --isolated --no-build-isolation --force-reinstall --no-deps git+https://github.com/pytti-tools/pytti-core.git@b5070aaeab05204f6eee0ff81c657bc486b9cdce
+    echo     python\python.exe -s -m pip install --isolated --force-reinstall --no-deps "pyttitools-core @ https://huggingface.co/pxlpshr/pytti-models/resolve/main/wheels/pyttitools_core-0.0.1-py3-none-any.whl#sha256=b8c5c4f5f3187cf5700861fc7b776f5a79a0e85e8f66ad5b7eb065c17d108267"
     echo %DIM%  Then run install.bat again. If that fails, delete the python folder and run install.bat again.%R%
 )
 goto :error
