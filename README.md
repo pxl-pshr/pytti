@@ -39,7 +39,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - NVIDIA driver 528.33 or newer (570.65 or newer recommended)
 - [Git](https://git-scm.com) installed and on PATH
 - [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
-- About 17 GB of free disk space to install; the finished install takes about 7 GB
+- About 17 GB of free disk space to install. Afterwards the `python` folder takes about 6.5 GB, and pip's download cache and the models take more (see [Disk space](#disk-space))
 - 8 GB or more of RAM recommended
 
 `install.bat` checks all of these before downloading anything and tells you what to fix.
@@ -57,11 +57,23 @@ Or download the ZIP from GitHub and extract all of it. Either way, keep the fold
 2. Double-click **`launch.bat`**
 3. A browser window opens — start rendering
 
-To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-core patches automatically.
+To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-core patches automatically. When an update also changes the packages PyTTI needs, `launch.bat` says the installed packages are out of date: run `install.bat` and answer Y to update them in place. pip skips the packages that are already up to date.
 
-Installs made before RTX 50xx support was added run PyTorch 2.0 and keep working. To move one to PyTorch 2.7, which RTX 50xx cards need and which rendered 20-30% faster in tests on an RTX 4090, delete the `python` folder and run `install.bat` again.
+Installs made before RTX 50xx support was added run PyTorch 2.0 and keep working. To move one to PyTorch 2.7, which RTX 50xx cards need and which rendered 20-30% faster in tests on an RTX 4090, update it with `install.bat` the same way. That downloads PyTorch again (3.3 GB) and needs NVIDIA driver 528.33 or newer, which `install.bat` checks before it changes anything.
 
-The first render will download CLIP and depth models (~1-4 GB), cached after that.
+The first render downloads the CLIP and depth models, about 2 GB with the default settings, and keeps them for later renders (see [Disk space](#disk-space)).
+
+## Disk space
+
+- **The `python` folder** takes about 6.5 GB.
+- **pip's download cache** is in `%LOCALAPPDATA%\pip\cache`, with about 3.3 GB for the PyTorch wheel. Updates and reinstalls reuse it. To clear it, run `python\python.exe -m pip cache purge` from the pytti folder. That empties the cache every Python on the PC shares, not only PyTTI's part.
+- **Models** are downloaded on first use to `%USERPROFILE%\.cache`:
+  - `clip`: CLIP models, about 1.1 GB for the three that are on by default
+  - `adabins`: the depth model for 3D mode, about 0.9 GB
+  - `torch\hub`: a 120 MB model the depth model builds on
+  - `vqgan`: VQGAN models, from 0.3 GB (coco) to 4.3 GB (sflckr) each
+
+Deleting the pytti folder leaves the cache and the models in place. To remove them too, delete those folders. Other programs that use CLIP or PyTorch may keep files in `clip` and `torch\hub` as well.
 
 ## Project Structure
 
@@ -75,6 +87,7 @@ pytti/
 │   ├── ui.py            # Gradio web UI
 │   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
 │   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.
+│   ├── deps_rev.txt     # Revision of install.bat's package list
 │   ├── outputs/         # Renders, one folder per run (created on first render)
 │   └── config/
 │       ├── default.yaml # Default render settings
@@ -93,8 +106,9 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 ## Troubleshooting
 
 - **Out of GPU memory**: lower the width and height, use fewer cutouts or CLIP models, or raise `gradient_accumulation_steps`.
-- **3D mode fails with `... to have 128 channels, but got N channels instead`**: the AdaBins depth model needs an image of at least about 384×384. Increase the width and height.
-- **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept.
+- **3D mode fails with `... to have 128 channels, but got N channels instead`**: the AdaBins depth model, which 3D mode and `depth_stabilization_weight` use, needs `(width * pixel_size) // 32` times `(height * pixel_size) // 32` to be at least 129. With `pixel_size` 1, 512×288 works and 512×256 doesn't. The UI checks this before it starts a render.
+- **The install stopped partway**: run `install.bat` again. It offers to resume, or to delete the `python` folder and start over.
+- **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models, which are stored outside the pytti folder (see [Disk space](#disk-space)).
 
 ## Resources
 

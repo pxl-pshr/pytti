@@ -35,9 +35,10 @@ if not exist python\python.exe (
 )
 
 if exist python\.install-complete goto :patch
-:: Installs made before the completion marker existed: accept them if the key packages are there
-python\python.exe -c "import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(m) for m in ['gradio', 'torch', 'pytti']) else 1)" >nul 2>&1
-if errorlevel 1 (
+:: Installs made before the completion marker existed: accept them if the key packages are
+:: there. || also catches a python.exe that can't start (a negative exit code), unlike
+:: "if errorlevel 1"
+python\python.exe -c "import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(m) for m in ['gradio', 'torch', 'pytti']) else 1)" >nul 2>&1 || (
     echo  %RED%The install did not finish. Run install.bat again.%R%
     echo.
     pause
@@ -48,12 +49,33 @@ type nul > python\.install-complete
 :patch
 :: Apply any pytti-core patches added since install, e.g. after a git pull
 python\python.exe app\patch_gradio.py --quiet
+set "PATCH=%errorlevel%"
+if "%PATCH%"=="0" goto :check_packages
+:: patch_gradio.py exits with 2 when it can't read or write a file, and with 1 when
+:: pytti-core doesn't match the version its patches expect. In the printed command, -s and
+:: --isolated keep the user's own Python packages and pip settings out, as install.bat does.
+:: --no-build-isolation builds with the installed setuptools instead of starting a second
+:: pip, which would read those settings again
+echo.
+if "%PATCH%"=="2" (
+    echo  %RED%Could not patch pytti-core: a file could not be read or written.%R%
+    echo  %DIM%Close other PyTTI windows, or wait a minute if antivirus is scanning, then run launch.bat again.%R%
+) else (
+    echo  %RED%Could not patch pytti-core. To reinstall it, open a command prompt in the pytti folder and run:%R%
+    echo    python\python.exe -s -m pip install --isolated --no-build-isolation --force-reinstall --no-deps git+https://github.com/pytti-tools/pytti-core.git@b5070aaeab05204f6eee0ff81c657bc486b9cdce
+    echo  %DIM%Then run launch.bat again. If that fails, delete the python folder and run install.bat again.%R%
+)
+echo.
+pause
+exit /b 1
+
+:check_packages
+:: install.bat copies app\deps_rev.txt into the marker, so a different number means the
+:: packages PyTTI needs have changed since, e.g. after a git pull
+fc /b app\deps_rev.txt python\.install-complete >nul 2>&1
 if errorlevel 1 (
+    echo  %YELLOW%The installed packages are out of date. Run install.bat to update them.%R%
     echo.
-    echo  %RED%Could not patch pytti-core. Delete the python folder and run install.bat again.%R%
-    echo.
-    pause
-    exit /b 1
 )
 
 echo  %DIM%Starting...%R%

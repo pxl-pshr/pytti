@@ -2,7 +2,12 @@
 # install that cannot work stops in seconds instead of failing an hour later.
 # Run by hand: powershell -ExecutionPolicy Bypass -File app\system_check.ps1
 #
+# -Update: for install.bat's in-place update, which skips the download and extract steps
+# and needs far less space, so the [ ] folder name and disk space checks are left out
+#
 # Exit codes: 0 = all checks passed, 10 = warnings only, 20 = at least one check failed
+
+param([switch]$Update)
 
 $ErrorActionPreference = 'Stop'
 
@@ -13,8 +18,8 @@ $root = Split-Path -Parent $PSScriptRoot
 # python\Lib\site-packages). Without long path support Windows caps full paths at 259 characters.
 $longestInstallPath = 165
 
-# Approximate space needed: the finished python\ folder, and pip's downloads and cache
-# (the PyTorch wheel alone is 3.3 GB)
+# Approximate space needed: the finished python\ folder (about 6.5 GB) with some headroom,
+# and pip's downloads and cache (the PyTorch wheel alone is 3.3 GB)
 $installGB = 9
 $downloadGB = 8
 
@@ -148,10 +153,17 @@ Check 'Git' {
 }
 
 Check 'install folder' {
+    # Windows PowerShell treats [ and ] as wildcards and can't work in such a folder, so
+    # install.bat's download and extract steps would write to System32 instead
+    if (-not $Update -and $root -match '[\[\]]') {
+        Fail 'The folder path contains [ or ]' @($root, 'Remove the brackets from the folder names, or move the pytti folder to a path such as C:\pytti.')
+        return
+    }
+
     $probe = Join-Path $root '.write-test'
     try {
         [IO.File]::WriteAllText($probe, '')
-        Remove-Item $probe
+        Remove-Item -LiteralPath $probe
     } catch {
         Fail "Can't write to $root" 'Move the pytti folder somewhere you own, such as C:\pytti.'
         return
@@ -165,13 +177,14 @@ Check 'install folder' {
     if (-not $longPaths -and $root.Length -gt $maxRoot) {
         Fail "The folder path is too long: $($root.Length) characters, the limit is $maxRoot" @($root, 'Move the pytti folder to a shorter path such as C:\pytti, or turn on Windows long path support.')
     } elseif ($oneDrive) {
-        Warn 'The pytti folder is inside OneDrive' 'OneDrive will try to sync the ~8 GB install. Moving the folder out, e.g. to C:\pytti, is recommended.'
+        Warn 'The pytti folder is inside OneDrive' 'OneDrive will try to sync the ~6.5 GB install. Moving the folder out, e.g. to C:\pytti, is recommended.'
     } else {
         Pass "Install folder $root"
     }
 }
 
 Check 'disk space' {
+    if ($Update) { return }
     # pip downloads into %TEMP% and caches under %LOCALAPPDATA%, usually the same drive as Windows
     $need = [ordered]@{}
     $need[[IO.Path]::GetPathRoot($root)] += $installGB

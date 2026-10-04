@@ -164,7 +164,7 @@ Constraints the engine or the UI enforces:
 - `cutouts` must be divisible by `gradient_accumulation_steps`.
 - `steps_per_scene` must be at least `interpolation_steps`.
 - Keep `pre_animation_steps` a multiple of `steps_per_frame`.
-- 3D mode needs an image of at least about 384x384.
+- In 3D mode, and whenever `depth_stabilization_weight` is set and not `0`, `(width * pixel_size) // 32` times `(height * pixel_size) // 32` must be at least 129, or the depth model fails. With `pixel_size: 1`, 512x288 works and 512x256 doesn't.
 - Use `pixel_size: 1` with VQGAN.
 - `seed` is a whole number. Leave it out for a random seed.
 
