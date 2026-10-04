@@ -4,6 +4,10 @@ What changed in each version of PyTTI Portable, newest first.
 
 ## [Unreleased]
 
+### Added
+
+- Load Config starts with a (defaults) entry, which fills in the settings from `config/default.yaml` with a blank Config Name. A page reload brings back the preset last loaded or saved, as it is on disk, instead of resetting every field to the defaults.
+
 ### Changed
 
 - Faster renders that need less GPU memory: speed patches for pytti-core and kornia. Palette lookups and cutout sampling do less work and wait less on the GPU, and on GPUs with more than 20 GB the CLIP image encoders run as CUDA graphs. With Gradient Accumulation Steps at 2, the default, a render with the default settings needs about 9 GB of GPU memory instead of about 14 GB.
@@ -11,9 +15,17 @@ What changed in each version of PyTTI Portable, newest first.
 - Installing no longer needs Git. pytti-core, AdaBins, GMA, taming-transformers and CLIP install from wheels on PyTTI Portable's Hugging Face mirror, each checked against its SHA-256, instead of from their GitHub repositories. Git is only needed to install with `git clone` and update with `git pull`.
 - `install.bat` installs every package at the version this release was tested with, listed in `app\constraints.txt`. That includes about 100 packages it doesn't name itself, which until now came in at whatever version was newest on the day of the install. pip is pinned too.
 - Encode Video, Video Source mode and audio input use ffmpeg 7.1 instead of 4.2.2 from 2019 (imageio-ffmpeg 0.6.0). After updating, PyTTI replaces its copy, `python\ffmpeg.exe`, the next time it uses ffmpeg.
+- Save and Start Render ask before replacing a preset the page didn't load or save, such as one whose name was typed in. Pressing again replaces it. Names that differ only in case count as the same preset, as they do in Windows.
+- Start Render reports mistakes in weight, prompt and camera move expressions, such as an unclosed bracket or a misspelled name, before any model loads. Load and Save mention them too.
+
+### Fixed
+
+- PyTTI opens behind a proxy set in Windows' settings that can't reach the PC itself, such as some company, school or VPN proxies. Launching stopped with "When localhost is not accessible, a shareable link must be created", or with a connection error. Model downloads still go through the proxy.
+- The VQGAN Model help no longer says the wikiart download is unreliable, and gives each model's download size.
 
 ### Security
 
+- Presets are checked for settings that could run code on the PC, when loaded and before a render: a `hydra:` or `defaults:` section, `${...}` in a prompt, weight or camera move, and expressions that use more than numbers, arithmetic, `t`, math functions and audio variables, such as `np.` calls. Start Render refuses such a preset, and Save mentions the problem. A `models_parent_dir` other than the default gets a note, since VQGAN model files can run code too. README.md and PROMPTING.md say presets can run code and list what expressions may use.
 - Pillow 10.4.0 replaces 9.4.0, whose WebP decoder had a heap overflow that a crafted image could exploit (CVE-2023-4863). pytti opens init images, image prompts, masks and target palettes with Pillow, including images it downloads from a URL.
 - hydra-core 1.3.7 replaces 1.3.2. It adds Hydra's checks against dangerous targets in configs, which Hydra describes as defense in depth rather than a complete security boundary.
 

@@ -108,7 +108,9 @@ Paths can be absolute (`C:\images\ref.png`) or URLs. A path relative to the pytt
 
 ## Weights that change over time
 
-A weight or stop can be any Python expression. `t` is the time in seconds since the animation started, `(step - pre_animation_steps) / (steps_per_frame * frames_per_second)`, so it is negative during the pre-animation steps. The functions of Python's `math` module are available without a prefix (`sin`, `cos`, `pi`, `sqrt`, `radians` and so on), along with `abs`, `min`, `max`, `pow` and `round`.
+A weight or stop can be an expression instead of a number. `t` is the time in seconds since the animation started, `(step - pre_animation_steps) / (steps_per_frame * frames_per_second)`, so it is negative during the pre-animation steps. The functions of Python's `math` module are available without a prefix (`sin`, `cos`, `pi`, `sqrt`, `radians` and so on), along with `abs`, `min`, `max`, `pow` and `round`.
+
+An expression can contain numbers, those names, [audio variables](#audio-reactive-weights), arithmetic (`+`, `-`, `*`, `/`, `//`, `%`, `**`), comparisons, `and`, `or`, `not`, `x if condition else y` and lists in square brackets, which `rotate_3d` needs. Python's `lambda` and list comprehensions work too. Nothing else does: no dots, as in `np.sin(t)`, no indexing, as in `values[0]`, and no text in quotes. pytti runs expressions as Python code, so anything more could run code on the PC, and PyTTI refuses to render it.
 
 ```text
 dawn light over the hills:2 if t < 4 else 0 | harsh midday sun:2 if 4 <= t < 8 else 0 | purple dusk:2 if t >= 8 else 0
@@ -133,6 +135,8 @@ A preset is a YAML file in `app/config/conf/`. It holds only the settings you wa
 To use a preset, save it as `app/config/conf/<name>.yaml`, press the refresh button next to Load Config in the Run tab, load it and press Start Render. The file name can use letters, numbers, spaces, `-`, `_` and `.`, and must start with a letter or number.
 
 The first line must be `# @package _global_`.
+
+Leave out `hydra:` and `defaults:` sections, and `${...}` references in prompts, weights and motion settings. They can run code on the PC or pull in text that can't be checked, so PyTTI refuses to render a preset that has them. For the same reason, only render presets from people you trust.
 
 ### Quote every string
 
@@ -170,7 +174,7 @@ Constraints the engine or the UI enforces:
 
 ### Motion expressions
 
-The motion settings are strings holding Python expressions, evaluated once per frame with the same `t` and functions as prompt weights.
+The motion settings are strings holding Python expressions, evaluated once per frame with the same `t`, functions and limits as prompt weights.
 
 | Setting | Meaning |
 |---------|---------|
@@ -316,11 +320,12 @@ translate_z_3d: '20 + 60*fLo'
 - No colon, pipe or surrounding square brackets inside any prompt text.
 - Every negative weight has a stop.
 - No underscore inside a weight, apart from the one that starts a mask.
+- Expressions use only numbers, operators, `t`, math functions and audio variables: no dots such as `np.sin`, no indexing and no quotes.
 - Every prompt is a short phrase.
 - Scene Prefix ends with a pipe and Scene Suffix starts with one.
 - File masks and image prompts are in square brackets.
 - Direction masks use `u`, `d`, `l` or `r` and a cutoff between 0.3 and 0.7.
-- In a preset: first line is `# @package _global_`, every string is in single quotes, and choice values come from the table above.
+- In a preset: first line is `# @package _global_`, every string is in single quotes, choice values come from the table above, and there is no `hydra:` or `defaults:` section and no `${...}` in a prompt, weight or motion setting.
 - Audio variables are defined in `input_audio_filters`, have no underscores, and `pre_animation_steps` is 0 if a prompt weight uses them.
 
 ## Where this comes from

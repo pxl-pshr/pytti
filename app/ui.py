@@ -4,6 +4,7 @@ pytti Portable UI
 Run via launch.bat — do not run directly with system Python.
 """
 __version__ = "1.1.0-beta"  # install.bat and launch.bat read this line for their banners
+import ast
 import atexit
 import contextlib
 import ctypes
@@ -54,6 +55,29 @@ def _patched_json_schema(schema, defs):
 _gc_utils._json_schema_to_python_type = _patched_json_schema
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Keep gradio's requests to the UI's own address away from proxies.
+# While launching, gradio requests its own page through httpx and fails when a
+# proxy that can't reach this PC answers ("When localhost is not accessible, ...")
+# or can't be reached at all. httpx takes its proxy from urllib, which on Windows
+# falls back to the proxy set in Windows' settings and ignores its bypass list.
+# NO_PROXY can't be used instead: renders inherit os.environ, and on Windows any
+# *_proxy variable makes urllib skip that proxy, so model downloads behind it
+# would fail.
+# ---------------------------------------------------------------------------
+import httpx
+
+_THIS_PC = ("127.0.0.1", "localhost", "::1")
+def _direct_to_this_pc(request):
+    def wrapper(url, *args, **kwargs):
+        if httpx.URL(url).host in _THIS_PC:
+            kwargs.setdefault("trust_env", False)
+        return request(url, *args, **kwargs)
+    return wrapper
+httpx.get = _direct_to_this_pc(httpx.get)
+httpx.head = _direct_to_this_pc(httpx.head)
+# ---------------------------------------------------------------------------
+
 import gradio as gr
 import yaml
 
@@ -69,7 +93,7 @@ TIPS = {
     "direct_init_weight": "How strongly the init image guides pixel appearance at the start.",
     "semantic_init_weight": "How strongly the init image guides semantic/CLIP content at the start.",
     "image_model": "Limited Palette: fast, painterly. Unlimited Palette: photographic. VQGAN: classic neural style.",
-    "vqgan_model": "Which VQGAN codebook to use when image_model is VQGAN. Only affects VQGAN mode.",
+    "vqgan_model": "Which VQGAN codebook to use when image_model is VQGAN. Only affects VQGAN mode. Each downloads once, on first use: 0.3 to 4.3 GB (see the FAQ tab).",
     "animation_mode": "off: single image. 2D/3D: camera moves each frame. Video Source: warp to a reference video.",
     "video_path": "Source video for Video Source animation mode.",
     "frame_stride": "Source video frames to advance per animation frame. 1 = every frame.",
@@ -135,7 +159,7 @@ HELP_SECTIONS = [
     ]),
     ("Image Model", [
         ("image_model", "<strong>Limited Palette</strong>: fast, painterly look using discrete color swatches — total colors = <code>palette_size × palettes</code>. <strong>Unlimited Palette</strong>: per-pixel color, more photographic. <strong>VQGAN</strong>: classic neural art using a pretrained codebook (set <code>pixel_size: 1</code> with VQGAN to avoid VRAM issues).", "choice"),
-        ("vqgan_model", "Which VQGAN codebook to use. Only matters when <code>image_model</code> is VQGAN. Options: <code>imagenet</code>, <code>coco</code>, <code>wikiart</code>, <code>sflckr</code>, <code>openimages</code>. Each has a different visual style bias. Checkpoints download on first use; the wikiart download server has been unreliable.", "choice"),
+        ("vqgan_model", "Which VQGAN codebook to use. Only matters when <code>image_model</code> is VQGAN. Options: <code>imagenet</code>, <code>coco</code>, <code>wikiart</code>, <code>sflckr</code>, <code>openimages</code>. Each has a different visual style bias. A model downloads once, on first use: <code>coco</code> 0.3 GB, <code>openimages</code> 0.4 GB, <code>imagenet</code> 1.0 GB, <code>wikiart</code> 1.0 GB, <code>sflckr</code> 4.3 GB.", "choice"),
     ]),
     ("Animation", [
         ("animation_mode", "<strong>off</strong>: single image, no animation. <strong>2D</strong>: pan/zoom/rotate the canvas each frame. <strong>3D</strong>: full 3D camera with AdaBins depth estimation. <strong>Video Source</strong>: warp frames of a source video using optical flow.", "choice"),
@@ -349,6 +373,16 @@ def get_conf_files():
     return [f.name for f in files if not f.name.startswith("_")]
 
 
+# Load Config's first entry: default.yaml's settings with a blank Config Name. A page
+# reload brings back the last preset, so this is the way back to the defaults.
+DEFAULTS_CHOICE = "(defaults)"
+
+
+def load_choices() -> list[str]:
+    """Load Config's entries: the defaults, then the presets."""
+    return [DEFAULTS_CHOICE] + get_conf_files()
+
+
 def load_defaults() -> dict:
     return load_yaml(DEFAULT_YAML)
 
@@ -388,15 +422,30 @@ def _conf_mtime(name: str) -> int | None:
         return None
 
 
+def _stamped(name: str, stamp) -> bool:
+    """Whether stamp is for conf/<name>; Windows file names ignore case."""
+    return bool(stamp) and os.path.normcase(stamp[0]) == os.path.normcase(name)
+
+
 def _changed_on_disk(name: str, stamp) -> int | None:
     """conf/<name>'s new mtime_ns if it changed since this page loaded or saved it, else None.
 
     stamp is (file name, mtime_ns as loaded or saved, mtime_ns the user was warned about).
     """
-    if not stamp or stamp[0] != name:
+    if not _stamped(name, stamp):
         return None
     mtime = _conf_mtime(name)
     return mtime if mtime not in (None, stamp[1]) else None
+
+
+def _not_loaded_here(name: str, stamp) -> bool:
+    """Whether saving would replace conf/<name>, a preset this page didn't load or save."""
+    return _valid_name(_conf_name(name)) and (CONF_DIR / name).exists() and not _stamped(name, stamp)
+
+
+def _listed_name(name: str) -> str:
+    """conf/<name> as Load Config lists it, which may differ in case."""
+    return next((listed for listed in get_conf_files() if os.path.normcase(listed) == os.path.normcase(name)), name)
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1294,37 @@ _MOTION_KEYS = {
 }
 # Preset keys pytti or Hydra read that default.yaml doesn't list
 _OPTIONAL_KEYS = {"defaults", "hydra", "restore", "mmc_models"}
+# Loss weights pytti splits as weight_mask:stop, and the two it splits like a scene
+# prompt's weight_mask_cutoff:stop
+_LOSS_WEIGHT_KEYS = ("direct_init_weight", "direct_stabilization_weight", "depth_stabilization_weight",
+                     "edge_stabilization_weight", "flow_stabilization_weight")
+_PROMPT_WEIGHT_KEYS = ("semantic_init_weight", "semantic_stabilization_weight")
+# Text pytti turns into prompts, weights and camera moves. OmegaConf fills in a ${...}
+# in it when the render starts, after the checks here.
+_PARSED_TEXT_KEYS = ("scenes", "scene_prefix", "scene_suffix", "direct_image_prompts", "init_image",
+                     *_LOSS_WEIGHT_KEYS, *_PROMPT_WEIGHT_KEYS, "translate_x", "translate_y",
+                     "translate_z_3d", "rotate_2d", "rotate_3d", "zoom_x_2d", "zoom_y_2d")
+# pytti runs expressions with eval() among math's functions and constants (no "math."
+# prefix), abs, max, min, pow, round and the time t (pytti/eval_tools.py). numpy is
+# there too, as np, but is left out here: its attributes reach the rest of Python,
+# os included.
+_EXPRESSION_NAMES = frozenset({name for name in dir(math) if "_" not in name} | {"abs", "max", "min", "pow", "round", "t"})
+# 3D camera moves can also use the depth of the frame: nearest point, farthest point, typical depth
+_DEPTH_NAMES = frozenset({"r", "R", "mu"})
+# Python syntax an expression may use: numbers, arithmetic, comparisons, and/or/not,
+# x if c else y, calls, lists and tuples, and the lambdas and comprehensions some
+# presets build a rotation with. Attributes (np.lib...), indexing and quoted text are
+# left out: they are how an expression gets past the names above.
+_EXPRESSION_SYNTAX = (
+    ast.Expression, ast.Constant, ast.Name, ast.Load, ast.Store, ast.UnaryOp, ast.unaryop,
+    ast.BinOp, ast.operator, ast.BoolOp, ast.boolop, ast.Compare, ast.cmpop, ast.IfExp,
+    ast.Call, ast.keyword, ast.List, ast.Tuple, ast.Lambda, ast.arguments, ast.arg,
+    ast.ListComp, ast.GeneratorExp, ast.comprehension,
+)
+# Characters an expression may have. Python 3.10's ast.parse crashes the whole UI on
+# input nested some 20000 levels deep, such as "1+1+1..."; the longest expression in
+# the presets seen so far has about 170.
+_MAX_EXPRESSION = 2000
 
 
 def _conf_name(name) -> str:
@@ -1367,6 +1447,130 @@ def missing_files(values: dict, labels: dict, extras: dict | None = None) -> lis
     if (extras or {}).get("input_audio_filters", load_defaults().get("input_audio_filters")):
         files.append(("input_audio", values["input_audio"]))
     return [f"File not found: {missing} ({labels[key]})." for key, text in files if (missing := _missing_file(text))]
+
+
+def _shorten(text: str, length: int = 60) -> str:
+    """text cut to length characters for the status box, ending in ... if it was longer."""
+    return text if len(text) <= length else text[:length - 3] + "..."
+
+
+def _prompt_parts(prompt: str) -> list[tuple[str, str]]:
+    """(part, text) of each expression in a scene prompt, split the way pytti splits
+    text:weight_mask_cutoff:stop: colons and underscores inside [ ] don't count."""
+    _, *rest = re.split(r":(?![^\[]*\])", prompt, maxsplit=2)
+    if not rest:
+        return []
+    weight, *mask = re.split(r"_(?![^\[]*\])", rest[0], maxsplit=2)
+    parts = [("weight", weight)]
+    if len(mask) == 2:
+        parts.append(("mask cutoff", mask[1]))
+    if len(rest) == 2:
+        parts.append(("stop", rest[1]))
+    return parts
+
+
+def _loss_parts(spec: str) -> list[tuple[str, str]]:
+    """(part, text) of each expression in a loss weight or in what follows an image prompt's
+    path, split the way pytti splits weight_mask:stop: a colon before \\ or / is a path's."""
+    weight, *stop = re.split(r":(?![\\/])", spec, maxsplit=1)
+    return [("weight", weight.split("_", 1)[0])] + [("stop", text) for text in stop]
+
+
+def _expression_problem(text: str, names) -> tuple[bool, str] | None:
+    """What keeps text from being an expression pytti can evaluate with these names: (True,
+    the part that could run code) or (False, the mistake, worded to follow the field's
+    name); None if there is nothing."""
+    text = text.strip()  # pytti's eval() skips leading spaces, ast.parse doesn't
+    if not text:
+        return False, "is empty"
+    if len(text) > _MAX_EXPRESSION:
+        return False, f"is too long to check ({len(text)} characters; {_MAX_EXPRESSION} at most)"
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError as e:
+        return False, f"isn't a valid expression: {_shorten(text)} ({e.msg})"
+    except (ValueError, MemoryError, RecursionError):  # a null character, or nested too deep to parse
+        return False, f"isn't a valid expression: {_shorten(text)}"
+
+    def quoted(node):
+        return _shorten(ast.get_source_segment(text, node) or type(node).__name__)
+    for node in ast.walk(tree):
+        # Text in quotes can't reach anything by itself; an f-string's {...} parts are checked here
+        if not isinstance(node, (*_EXPRESSION_SYNTAX, ast.JoinedStr, ast.FormattedValue)):
+            return True, quoted(node)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr) or (isinstance(node, ast.Constant) and not isinstance(node.value, (int, float, complex))):
+            # Usually a preset's unquoted [a, b, c, d], which YAML reads as a list of text
+            return False, f"uses {quoted(node)}, which isn't a number. In a preset file, put single quotes around the whole expression"
+    # Names a lambda or comprehension in the expression defines
+    names = names | {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
+    names |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id not in names:
+            return False, f"uses {node.id}, which isn't t, a math function or one of the preset's audio variables"
+    return None
+
+
+def preset_risks(values: dict, extras: dict, labels: dict) -> tuple[list[str], list[str]]:
+    """What in a preset could run code on this PC, and expressions pytti can't evaluate.
+
+    values holds the UI fields; of extras, only the preset's keys without a widget are
+    read. Returns (problems, which stop a render, notes), worded for the status box.
+    Expressions may use what PROMPTING.md lists: numbers, arithmetic, t and math's
+    functions. pytti runs them with eval(), so anything beyond that could run code.
+    """
+    code, mistakes, notes = [], [], []
+    if extras.get("hydra"):
+        code.append("The preset has a hydra: section, which can run programs on this PC. PyTTI doesn't need one: delete it from the preset's file in config/conf.")
+    if extras.get("defaults") not in (None, [], ["_self_"]):
+        code.append("The preset has a defaults: list, which can pull other files into the render, such as one with a hydra: section. PyTTI doesn't need one: delete it from the preset's file in config/conf.")
+    for key in _PARSED_TEXT_KEYS:
+        if "${" in str(values.get(key) or ""):
+            code.append(f"{labels[key]} uses ${{...}}, which pulls in other text when the render starts, where it could run code on this PC. Write the value out instead.")
+    filters = extras.get("input_audio_filters", load_defaults().get("input_audio_filters"))
+    audio = {str(f["variable_name"]) for f in filters if isinstance(f, dict) and f.get("variable_name")} if isinstance(filters, list) else set()
+    names = _EXPRESSION_NAMES | audio | {f"{name}_prev" for name in audio}  # pytti adds the previous frame's as <name>_prev
+
+    checks = []  # (where, expression, the names it may use)
+    mode = values.get("animation_mode")
+    motion_names = (names | _DEPTH_NAMES) if mode == "3D" else names
+    for key in _MOTION_KEYS.get(mode, ()):
+        if str(values.get(key) or "").strip():  # conf_problems reports a blank one
+            checks.append((labels[key], str(values[key]), motion_names))
+    # Prefix, scene and suffix give the same prompts checked apart: saving makes the prefix
+    # end and the suffix start with a pipe, and turns line breaks and runs of spaces into one
+    for key in ("scene_prefix", "scenes", "scene_suffix"):
+        for prompt in str(values.get(key) or "").split("|"):
+            prompt = " ".join(prompt.split())
+            checks += [(f"The {part} of '{_shorten(prompt)}' in {labels[key]}", text, names)
+                       for part, text in _prompt_parts(prompt)]
+    for image, *spec in _split_image_prompts(str(values.get("direct_image_prompts") or "")):
+        if spec:
+            prompt = f"{image}:{spec[0]}"
+            checks += [(f"The {part} of '{_shorten(prompt)}' in {labels['direct_image_prompts']}", text, names)
+                       for part, text in _loss_parts(spec[0])]
+    for key in _LOSS_WEIGHT_KEYS + _PROMPT_WEIGHT_KEYS:
+        weight = _weight_value(values.get(key))  # pytti skips a blank one
+        if weight:
+            parts = _prompt_parts(f"weight:{weight}") if key in _PROMPT_WEIGHT_KEYS else _loss_parts(weight)
+            checks += [(labels[key] if part == "weight" else f"The {part} of {labels[key]}", text, names) for part, text in parts]
+    expression_code = []
+    for where, text, allowed in checks:
+        found = _expression_problem(text, allowed)
+        if found and found[0]:
+            expression_code.append(f"{where} uses {found[1]}, which could run code on this PC.")
+        elif found:
+            mistakes.append(f"{where} {found[1]}.")
+    if expression_code:
+        code += expression_code + ["Expressions can use numbers, t, math functions such as sin() and the preset's audio variables."]
+    if code:
+        code.append("Only render presets from people you trust.")
+
+    models_dir = extras.get("models_parent_dir")
+    if models_dir not in (None, "${user_cache:}"):
+        notes.append(f"The preset loads VQGAN models from {models_dir} (models_parent_dir), and model files can run code on this PC: keep it only for models you trust.")
+    # A prompt used in several scenes would be reported once per scene
+    return list(dict.fromkeys(code + mistakes)), notes
 
 
 def _unknown_key_notes(data: dict) -> list[str]:
@@ -1630,6 +1834,9 @@ _THEME = gr.themes.Base(primary_hue="cyan", neutral_hue="slate").set(
 # UI
 # ---------------------------------------------------------------------------
 
+_last_preset: str | None = None  # file name of the preset last loaded or saved, which a page reload brings back
+
+
 def make_ui():
     cfg = load_defaults()
     # Serve preview frames straight from outputs/ instead of copying each into Gradio's temp cache
@@ -1818,7 +2025,7 @@ def make_ui():
             with gr.Tab("Run"):
                 with gr.Row(equal_height=True):
                     conf_name_input = gr.Textbox(label="Config Name", placeholder="my_run", scale=2)
-                    load_conf_dropdown = gr.Dropdown(label="Load Config", choices=get_conf_files(), scale=2)
+                    load_conf_dropdown = gr.Dropdown(label="Load Config", choices=load_choices(), scale=2)
                     refresh_configs_btn = gr.Button("↻", variant="secondary", scale=0, min_width=36, elem_classes=["btn-sm"])
                     load_btn = gr.Button("Load", variant="secondary", scale=0, min_width=70, elem_classes=["btn-sm"])
                     save_btn = gr.Button("Save", variant="secondary", scale=0, min_width=70, elem_classes=["btn-sm"])
@@ -1829,7 +2036,8 @@ def make_ui():
                 progress_box = gr.Textbox(label="Progress", interactive=False, lines=1)
                 # Keys from the last loaded preset that have no widget, carried over when saving under a new name
                 extras_state = gr.State({})
-                # (file name, mtime_ns) of the preset as last loaded or saved here, to notice edits made outside the UI
+                # (file name, mtime_ns) of the preset as last loaded or saved here, to notice edits made
+                # outside the UI and saves over a preset this page never loaded
                 conf_stamp = gr.State(None)
 
                 gr.Markdown("### Live Log")
@@ -1909,7 +2117,8 @@ def make_ui():
             """Check the UI's settings and save them as the preset, for Save and Start Render.
 
             Returns (file name, notes) once saved, or (None, problems) if nothing was written.
-            Missing input files stop only a render; Save mentions them in its notes.
+            Missing input files, and settings that could run code or that pytti can't
+            evaluate, stop only a render; Save mentions them in its notes.
             """
             name = _conf_name(name)
             values = dict(zip(CONF_FIELDS, args))
@@ -1919,13 +2128,14 @@ def make_ui():
                 return None, [str(e)]
             problems = conf_problems(name, values, labels)
             missing = missing_files(values, labels, base)
+            risks, risk_notes = preset_risks(values, base, labels)
             if for_render:
-                problems += missing
+                problems += missing + risks
             if problems:
                 return None, problems
             filename = f"{name}.yaml"
             try:
-                return filename, missing + write_conf(filename, base, values)
+                return filename, missing + risks + write_conf(filename, base, values) + risk_notes
             except OSError as e:
                 return None, [f"Could not save config/conf/{filename}: {e.strerror or e}."]
 
@@ -1933,8 +2143,18 @@ def make_ui():
             return (f"config/conf/{filename} was changed outside PyTTI since it was loaded. "
                     "Press Load to use those changes, or Save to overwrite them.")
 
+        def _ask_before_replacing(filename):
+            """Load Config set to the preset, the question, and a stamp that lets the next press through."""
+            question = (f"config/conf/{filename} already exists and wasn't loaded here. "
+                        "Press Load to use it, or press again to overwrite it.")
+            return gr.Dropdown(choices=load_choices(), value=_listed_name(filename)), question, (filename, _conf_mtime(filename), None)
+
         def save_config(name, extras, stamp, *args):
+            global _last_preset
             filename = f"{_conf_name(name)}.yaml"
+            if _not_loaded_here(filename, stamp):
+                # e.g. an existing preset's name typed in over other settings
+                return _ask_before_replacing(filename)
             changed = _changed_on_disk(filename, stamp)
             if changed and changed != stamp[2]:
                 # Remember the warning, so pressing Save again overwrites the file
@@ -1942,8 +2162,9 @@ def make_ui():
             filename, status = _save_preset(name, extras, args)
             if filename is None:
                 return gr.update(), " ".join(status), gr.update()
+            _last_preset = _listed_name(filename)
             saved = [f"Saved to config/conf/{filename}."]
-            return gr.Dropdown(choices=get_conf_files()), " ".join(saved + status), (filename, _conf_mtime(filename), None)
+            return gr.Dropdown(choices=load_choices()), " ".join(saved + status), (filename, _conf_mtime(filename), None)
 
         def _live_view(namespace, running):
             """Log, latest frame, progress and timer, all from one reading of whether the render runs."""
@@ -1964,16 +2185,23 @@ def make_ui():
             return *view, _render_status or gr.skip(), refresh_encode_list(encode_pick)
 
         def load_existing(name):
+            global _last_preset
             if not name:
                 return [gr.update()] * (len(all_inputs) + 5)
-            if not (CONF_DIR / name).exists():
-                missing = [f"{name} no longer exists.", gr.Dropdown(choices=get_conf_files(), value=None), gr.update()]
+            if name == DEFAULTS_CHOICE:
+                # No config name and no stamp, so a save asks before replacing a preset
+                preset, stamp = {}, None
+            elif not (CONF_DIR / name).exists():
+                if name == _last_preset:
+                    _last_preset = None
+                missing = [f"{name} no longer exists.", gr.Dropdown(choices=load_choices(), value=None), gr.update()]
                 return [gr.update()] * (len(all_inputs) + 2) + missing
-            stamp = (name, _conf_mtime(name), None)  # taken first, so an edit made while reading isn't missed
-            try:
-                preset = load_conf(name)
-            except PresetError as e:
-                return [gr.update()] * (len(all_inputs) + 2) + [str(e), gr.update(), gr.update()]
+            else:
+                stamp = (name, _conf_mtime(name), None)  # taken first, so an edit made while reading isn't missed
+                try:
+                    preset = load_conf(name)
+                except PresetError as e:
+                    return [gr.update()] * (len(all_inputs) + 2) + [str(e), gr.update(), gr.update()]
             defaults = load_defaults()
             data = _resolve_references({**defaults, **preset})
             extras = {k: v for k, v in preset.items() if k not in CONF_KEYS}
@@ -1988,14 +2216,27 @@ def make_ui():
                     notes.append(f"{labels[key]} '{value}' isn't a valid choice; using {fallback}.")
                     value = fallback
                 values.append(value)
-            status = " ".join([f"Loaded {name}."] + notes + _unknown_key_notes(preset))
-            return values + [_conf_name(name), extras, status, gr.update(), stamp]
+            risks, risk_notes = preset_risks(dict(zip(CONF_FIELDS, values)), extras, labels)
+            if stamp is None:
+                _last_preset = None
+                status = "Loaded the defaults from config/default.yaml. Enter a Config Name to save them as a preset."
+            else:
+                _last_preset = name
+                status = f"Loaded {name}."
+            status = " ".join([status] + notes + _unknown_key_notes(preset) + risks + risk_notes)
+            # Choices too: after a page reload they are the ones listed when the UI started
+            dropdown = gr.Dropdown(choices=load_choices(), value=name)
+            return values + [_conf_name(name) if stamp else "", extras, status, dropdown, stamp]
 
         def run_and_activate_timer(name, extras, stamp, *args):
+            global _last_preset
             if _running:
                 # Don't overwrite a preset that may be in use; just resume live updates
                 return gr.update(), "Already running.", gr.Timer(active=True), gr.update()
             filename = f"{_conf_name(name)}.yaml"
+            if _not_loaded_here(filename, stamp):
+                dropdown, question, stamp = _ask_before_replacing(filename)
+                return dropdown, question, gr.Timer(active=False), stamp
             changed = _changed_on_disk(filename, stamp)
             if changed:
                 # Never render over outside edits; a Save after this warning overwrites them
@@ -2004,9 +2245,10 @@ def make_ui():
             filename, status = _save_preset(name, extras, args, for_render=True)
             if filename is None:
                 return gr.update(), " ".join(status), gr.Timer(active=False), gr.update()
+            _last_preset = _listed_name(filename)
             stamp = (filename, _conf_mtime(filename), None)
             msg = start_render(filename)
-            return gr.Dropdown(choices=get_conf_files()), " ".join([msg] + status), gr.Timer(active=_running), stamp
+            return gr.Dropdown(choices=load_choices()), " ".join([msg] + status), gr.Timer(active=_running), stamp
 
         def stop_and_deactivate_timer(namespace, encode_pick):
             msg = stop_render()
@@ -2028,10 +2270,14 @@ def make_ui():
         stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace, encode_choice], outputs=[status_box, timer, log_box, frame_preview, progress_box, encode_run_dropdown])
         refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview, progress_box, timer])
         timer.tick(fn=tick, inputs=[file_namespace, encode_choice], outputs=[log_box, frame_preview, progress_box, timer, status_box, encode_run_dropdown])
-        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input, extras_state, status_box, load_conf_dropdown, conf_stamp])
-        refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
+        load_outputs = all_inputs + [conf_name_input, extras_state, status_box, load_conf_dropdown, conf_stamp]
+        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=load_outputs)
+        refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=load_choices()), outputs=[load_conf_dropdown])
         # A page reload resets the timer; resume live updates if a render is still going
         demo.load(fn=lambda: gr.Timer(active=_running), outputs=[timer])
+        # It also resets every field to default.yaml's values and empties Config Name; bring
+        # back the preset last loaded or saved, as it is on disk
+        demo.load(fn=lambda: load_existing(_last_preset), outputs=load_outputs)
 
         # Encode video callbacks
         encode_refresh_btn.click(fn=refresh_encode_list, inputs=[encode_choice], outputs=[encode_run_dropdown])

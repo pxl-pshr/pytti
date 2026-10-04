@@ -30,7 +30,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - **Breath mode** — linear crossfade from init image to CLIP-optimized output over the full render. Frame 1 is your original image; the final frame is fully transformed by CLIP. Creates smooth "emergence" animations showing the AI interpretation gradually taking over (best with little or no camera motion)
 - **Video encoding** — built-in ffmpeg encoding (MP4 H.264, ProRes 4444, ProRes HQ) directly from the Output tab
 - **Audioreactive** animation support (audio filters are set in the preset YAML)
-- **Config system** powered by Hydra — save, load, and share render presets as YAML files
+- **Config system** powered by Hydra — save, load, and share render presets as YAML files. A preset can run code on your PC, so only render presets from people you trust; PyTTI checks each one before it renders (see [Troubleshooting](#troubleshooting))
 
 ## Requirements
 
@@ -111,6 +111,8 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 - **Out of GPU memory**: lower the width and height, use fewer cutouts or CLIP models, or raise `gradient_accumulation_steps`.
 - **Renders are slow**: on a GPU with 24 GB or more, set `gradient_accumulation_steps` to 1. It is about 25% faster than 2, gives the same result, and needs about 17 GB with the default settings instead of about 9 GB. If a render is far slower than usual, check Task Manager > Performance > GPU: rising "Shared GPU memory" means the render no longer fits in the GPU's memory and Windows is using system RAM; use the out-of-memory fixes above.
 - **3D mode fails with `... to have 128 channels, but got N channels instead`**: the AdaBins depth model, which 3D mode and `depth_stabilization_weight` use, needs `(width * pixel_size) // 32` times `(height * pixel_size) // 32` to be at least 129. With `pixel_size` 1, 512×288 works and 512×256 doesn't. The UI checks this before it starts a render.
+- **Start Render says a setting could run code on this PC**: pytti runs the expressions in weights and camera moves as Python code, and Hydra runs what a preset's `hydra:` section names, so a preset can do anything your Windows account can. Only render presets from people you trust. PyTTI checks a preset when you load it and before it renders: expressions may use numbers, arithmetic, `t`, math functions such as `sin()` and audio variables ([PROMPTING.md](PROMPTING.md#weights-that-change-over-time) lists them), and Start Render refuses a preset with a `hydra:` or `defaults:` section, or with `${...}` in a prompt, weight or camera move. Fix the setting the message names, or delete the section from the preset's file in `app/config/conf`.
+- **The UI doesn't open, and the `launch.bat` window says `When localhost is not accessible, a shareable link must be created`**: something on this PC kept PyTTI from reaching its own page at 127.0.0.1, such as a firewall, antivirus or VPN program that blocks local connections. Proxies are already bypassed for that address. Don't set `share=True` as the message suggests: that puts the UI on a public link, where anyone who has it can start renders, and renders can run code.
 - **The install stopped partway**: run `install.bat` again. It offers to resume, or to delete the `python` folder and start over.
 - **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models, which are stored outside the pytti folder (see [Disk space](#disk-space)).
 
