@@ -275,7 +275,7 @@ python\python.exe -m pip install --no-warn-script-location "clip @ %WHEELS%/clip
 if errorlevel 1 goto :error
 
 echo %DIM%       [+] pytti-core%R%
-:: Pinned: app\patch_gradio.py patches this exact version
+:: Pinned: app\patch_pytti.py patches this exact version
 python\python.exe -m pip install --no-warn-script-location "pyttitools-core @ %WHEELS%/pyttitools_core-0.0.1-py3-none-any.whl#sha256=b8c5c4f5f3187cf5700861fc7b776f5a79a0e85e8f66ad5b7eb065c17d108267"
 if errorlevel 1 goto :error
 
@@ -283,7 +283,7 @@ call :ok
 
 :: ---------------------------------------------------------------------------
 call :step 6 6 "Applying patches"
-python\python.exe app\patch_gradio.py
+python\python.exe app\patch_pytti.py
 set "PATCH=%errorlevel%"
 if not "%PATCH%"=="0" goto :patch_failed
 :: copy reports its errors on stdout, so >nul hides them
@@ -320,7 +320,7 @@ echo   %GREEN%      done.%R%
 exit /b 0
 
 :patch_failed
-:: patch_gradio.py exits with 2 when it can't read or write a file, and with 1 when
+:: patch_pytti.py exits with 2 when it can't read or write a file, and with 1 when
 :: pytti-core doesn't match the version its patches expect. The printed command runs
 :: without the settings at the top of this file, so -s and --isolated keep the user's own
 :: Python packages and pip settings out

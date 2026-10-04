@@ -1,5 +1,5 @@
 """
-app/patch_gradio.py against the pristine packages it patches.
+app/patch_pytti.py against the pristine packages it patches.
 
 launch.bat runs the patcher on every start, and a pytti-core patch that stops applying
 stops every launch. Most tests here run a copy of the patcher in a folder laid out like an
@@ -13,11 +13,11 @@ import sys
 
 import pytest
 
-import patch_gradio
+import patch_pytti
 from pins import APP
 
-REQUIRED = patch_gradio.TARGETS
-OPTIONAL = patch_gradio.OPTIONAL_TARGETS  # kornia's speed patches, skipped when they don't match
+REQUIRED = patch_pytti.TARGETS
+OPTIONAL = patch_pytti.OPTIONAL_TARGETS  # kornia's speed patches, skipped when they don't match
 ALL = REQUIRED + OPTIONAL
 
 
@@ -27,7 +27,7 @@ def label(entry):
 
 def relative(target):
     """A file's path in site-packages."""
-    return target.relative_to(patch_gradio.SITE_PACKAGES)
+    return target.relative_to(patch_pytti.SITE_PACKAGES)
 
 
 def alternatives(olds):
@@ -47,18 +47,18 @@ class Install:
             shutil.copyfile(pristine / relative(target), self.path(target))
         app = root / "app"
         app.mkdir()
-        shutil.copyfile(APP / "patch_gradio.py", app / "patch_gradio.py")
-        for source, _, _ in patch_gradio.ADDED_FILES:
+        shutil.copyfile(APP / "patch_pytti.py", app / "patch_pytti.py")
+        for source, _, _ in patch_pytti.ADDED_FILES:
             shutil.copyfile(source, app / source.relative_to(APP))
 
     def path(self, target):
-        """Where this folder keeps a file that patch_gradio.py names."""
+        """Where this folder keeps a file that patch_pytti.py names."""
         return self.site / relative(target)
 
     def patch(self, *args):
         """Run the patcher as launch.bat does: (exit code, what it printed)."""
         result = subprocess.run(
-            [sys.executable, str(self.root / "app" / "patch_gradio.py"), *args],
+            [sys.executable, str(self.root / "app" / "patch_pytti.py"), *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
@@ -79,7 +79,7 @@ def patched(pristine):
     """{target: its text with every patch applied}, as plan_patches works it out."""
     texts = {}
     for target, patches, name in ALL:
-        texts[target], problems = patch_gradio.plan_patches(pristine / relative(target), patches, name)
+        texts[target], problems = patch_pytti.plan_patches(pristine / relative(target), patches, name)
         assert not problems, problems
     return texts
 
@@ -110,7 +110,7 @@ def test_each_patch_applies_once_to_the_pristine_file(pristine, entry):
         )
         text = text.replace(found[0], new)
     compile(text, str(target), "exec")  # the patched file is still Python
-    assert patch_gradio.plan_patches(pristine / relative(target), patches, name) == (text, [])
+    assert patch_pytti.plan_patches(pristine / relative(target), patches, name) == (text, [])
 
 
 def test_no_old_text_occurs_in_its_new_text():
@@ -136,7 +136,7 @@ def test_every_old_text_upgrades_to_the_same_result(tmp_path, patched, entry):
         assert final.count(new) == 1, f"{name}, patch {number}: its new text should occur once in the patched file"
         for alternative, old in enumerate(alternatives(olds), 1):
             path.write_text(final.replace(new, old), encoding="utf-8")
-            result = patch_gradio.plan_patches(path, patches, name)
+            result = patch_pytti.plan_patches(path, patches, name)
             assert result == (final, []), f"{name}, patch {number}, old text {alternative}: {result[1]}"
 
 
@@ -145,7 +145,7 @@ def test_patching_twice_changes_nothing(install, patched):
     assert code == 0, output
     for target, _, name in ALL:
         assert install.path(target).read_text(encoding="utf-8") == patched[target], name
-    for source, destination, name in patch_gradio.ADDED_FILES:
+    for source, destination, name in patch_pytti.ADDED_FILES:
         assert install.path(destination).read_text(encoding="utf-8") == source.read_text(encoding="utf-8"), name
 
     files = install.files()

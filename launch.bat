@@ -48,10 +48,10 @@ type nul > python\.install-complete
 
 :patch
 :: Apply any pytti-core patches added since install, e.g. after a git pull
-python\python.exe app\patch_gradio.py --quiet
+python\python.exe app\patch_pytti.py --quiet
 set "PATCH=%errorlevel%"
 if "%PATCH%"=="0" goto :check_packages
-:: patch_gradio.py exits with 2 when it can't read or write a file, and with 1 when
+:: patch_pytti.py exits with 2 when it can't read or write a file, and with 1 when
 :: pytti-core doesn't match the version its patches expect. In the printed command, -s and
 :: --isolated keep the user's own Python packages and pip settings out, as install.bat does
 echo.

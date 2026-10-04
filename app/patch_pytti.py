@@ -1,6 +1,6 @@
 """
-patch_gradio.py
----------------
+patch_pytti.py
+--------------
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, Video Source and video mask conversion,
 Video Source end of video, prompt mask positions, output and backup folders,
@@ -23,7 +23,7 @@ Exit status:
 
 The gradio_client schema fix is applied at runtime by ui.py instead.
 
-    python patch_gradio.py [--quiet]
+    python patch_pytti.py [--quiet]
 """
 import errno
 import os

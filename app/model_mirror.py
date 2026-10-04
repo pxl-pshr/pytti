@@ -17,7 +17,7 @@ is moved into place only after its size and SHA-256 match. Anything that can't b
 fetched is left to the library, which downloads it from its original source to the
 same folder.
 
-patch_gradio.py copies this file into pytti-core as pytti/model_mirror.py. Its
+patch_pytti.py copies this file into pytti-core as pytti/model_mirror.py. Its
 workhorse.py patch calls prefetch_models() before CLIP is loaded, and its patches
 load the models from the folders clip_folder(), adabins_folder(), hub_folder() and
 vqgan_folder() return.
@@ -284,7 +284,7 @@ def _fetch(file, target, label=None, exact=False):
 
 def _fetch_repo(file, repo_dir):
     """Unpack a mirrored torch.hub code snapshot as the folder torch.hub caches it in.
-    AdaBins asks for the master branch (patched in patch_gradio.py), so torch.hub then
+    AdaBins asks for the master branch (patched in patch_pytti.py), so torch.hub then
     uses this folder without contacting GitHub."""
     if repo_dir.exists():
         return

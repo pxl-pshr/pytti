@@ -3,7 +3,7 @@ import ast
 from pathlib import PurePosixPath
 
 import model_mirror
-import patch_gradio
+import patch_pytti
 import ui
 from pins import INSTALL_BAT, LAUNCH_BAT, wheel_pins
 
@@ -40,7 +40,7 @@ def test_clip_models_match_pytti_and_the_mirror(pristine):
 
 def test_the_ui_reads_the_video_end_the_patch_logs():
     """The Progress box ends at the step the patched workhorse.py logs for a short source video."""
-    new = next(new for _, patches, _ in patch_gradio.TARGETS for _, new in patches if "render will end at step" in new)
+    new = next(new for _, patches, _ in patch_pytti.TARGETS for _, new in patches if "render will end at step" in new)
     match = ui._VIDEO_END_RE.search(new.replace("{n_frames}", "12").replace("{end_step}", "345"))
     assert match and match.group(1) == "345"
 

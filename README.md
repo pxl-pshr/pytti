@@ -101,7 +101,7 @@ pytti/
 ├── cache/               # pip's download cache, models and Video Source conversions (see Disk space)
 ├── app/
 │   ├── ui.py            # Gradio web UI
-│   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
+│   ├── patch_pytti.py   # Patches to pytti-core, AdaBins and kornia (applied on install and every launch)
 │   ├── model_mirror.py  # Fetches models from the Hugging Face mirror (copied into pytti-core)
 │   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.
 │   ├── deps_rev.txt     # Revision of install.bat's package list

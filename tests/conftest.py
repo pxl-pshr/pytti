@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-# pins.py from here; ui, patch_gradio and model_mirror from app/, as launch.bat runs them
+# pins.py from here; ui, patch_pytti and model_mirror from app/, as launch.bat runs them
 sys.path[:0] = [str(Path(__file__).parent), str(Path(__file__).parent.parent / "app")]
 
 from pins import ENDPOINT, INSTALL_BAT, MIRROR_REPO, WHEELS_FOLDER, pinned_version, wheel_pins  # noqa: E402

@@ -2,7 +2,7 @@ PyTTI Portable
 
 Portions of this software are derived from pytti-core
 (https://github.com/pytti-tools/pytti-core): app/config/default.yaml and the
-code that app/patch_gradio.py applies to pytti-core. Those portions are:
+code that app/patch_pytti.py applies to pytti-core. Those portions are:
 
 Copyright (c) 2022 David Marx
 Copyright (c) 2021 Henry Rachootin
