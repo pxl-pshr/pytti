@@ -61,7 +61,7 @@ To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-
 
 Installs made before RTX 50xx support was added run PyTorch 2.0 and keep working. To move one to PyTorch 2.7, which RTX 50xx cards need and which rendered 20-30% faster in tests on an RTX 4090, update it with `install.bat` the same way. That downloads PyTorch again (3.3 GB) and needs NVIDIA driver 528.33 or newer, which `install.bat` checks before it changes anything.
 
-The first render downloads the CLIP and depth models, about 2 GB with the default settings, and keeps them for later renders (see [Disk space](#disk-space)).
+The first render downloads the CLIP and depth models, about 2 GB with the default settings, and keeps them for later renders (see [Disk space](#disk-space)). They come from PyTTI Portable's mirror on Hugging Face, [pxlpshr/pytti-models](https://huggingface.co/pxlpshr/pytti-models), with each file checked against its SHA-256. A model the mirror doesn't have, or can't deliver, is downloaded from its original source instead.
 
 ## Disk space
 
@@ -86,6 +86,7 @@ pytti/
 ├── app/
 │   ├── ui.py            # Gradio web UI
 │   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
+│   ├── model_mirror.py  # Fetches models from the Hugging Face mirror (copied into pytti-core)
 │   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.
 │   ├── deps_rev.txt     # Revision of install.bat's package list
 │   ├── outputs/         # Renders, one folder per run (created on first render)

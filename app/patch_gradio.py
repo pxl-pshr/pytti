@@ -4,7 +4,8 @@ patch_gradio.py
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, Video Source and video mask conversion,
 Video Source end of video, prompt mask positions, output and backup folders,
-VQGAN downloads, audio input).
+VQGAN downloads, audio input), plus model_mirror.py, which fetches models from
+PyTTI Portable's mirror on Hugging Face, and AdaBins' torch.hub branch.
 
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped.
@@ -162,6 +163,26 @@ PYTTI_WORKHORSE_PATCHES = [
         '            logger.info("Running prompt:", " | ".join(map(str, scene)))\n'
         '            i += model.run_steps(\n'
         '                min(params.steps_per_scene - skip_steps, end_step - i),\n',
+    ),
+    # Fetch the models the render needs from PyTTI Portable's Hugging Face mirror before
+    # they're loaded (pytti/model_mirror.py, added below). Whatever it can't fetch is
+    # downloaded from the original source as before.
+    (
+        '        # Phase 2 - load and parse\n'
+        '        ###########################\n'
+        '\n'
+        '        # load CLIP\n',
+        '        # Phase 2 - load and parse\n'
+        '        ###########################\n'
+        '\n'
+        '        try:\n'
+        '            from pytti.model_mirror import prefetch_models\n'
+        '\n'
+        '            prefetch_models(params)\n'
+        '        except Exception as e:\n'
+        '            logger.warning(f"Skipped the PyTTI model mirror: {e}")\n'
+        '\n'
+        '        # load CLIP\n',
     ),
 ]
 
@@ -581,6 +602,32 @@ PYTTI_VQGAN_PATCHES = [
     ),
 ]
 
+# ── AdaBins patches: models/unet_adaptive_bins.py ───────────────────────────
+
+ADABINS_UNET = SITE_PACKAGES / "adabins" / "models" / "unet_adaptive_bins.py"
+
+ADABINS_UNET_PATCHES = [
+    # With no branch named, torch.hub asked GitHub for the repo's default branch on every
+    # 3D render and failed on any answer but a 404 or no network, even with the code in its
+    # cache (model_mirror.py puts it there). Naming the branch uses the cached copy.
+    (
+        "        basemodel = torch.hub.load('rwightman/gen-efficientnet-pytorch', basemodel_name, pretrained=True)",
+        "        basemodel = torch.hub.load('rwightman/gen-efficientnet-pytorch:master', basemodel_name, pretrained=True)",
+    ),
+]
+
+# ── Files added to pytti-core ───────────────────────────────────────────────
+
+# (source next to this script, destination in pytti-core, label); copied whenever the
+# destination is missing or differs, so `git pull` updates them too
+ADDED_FILES = [
+    (
+        pathlib.Path(__file__).parent / "model_mirror.py",
+        SITE_PACKAGES / "pytti" / "model_mirror.py",
+        "model_mirror.py",
+    ),
+]
+
 TARGETS = [
     (PYTTI_WORKHORSE, PYTTI_WORKHORSE_PATCHES, "workhorse.py"),
     (PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py"),
@@ -592,6 +639,7 @@ TARGETS = [
     (PYTTI_PROMPT, PYTTI_PROMPT_PATCHES, "Prompt.py"),
     (PYTTI_AUDIOPARSE, PYTTI_AUDIOPARSE_PATCHES, "AudioParse.py"),
     (PYTTI_VQGAN, PYTTI_VQGAN_PATCHES, "vqgan.py"),
+    (ADABINS_UNET, ADABINS_UNET_PATCHES, "unet_adaptive_bins.py"),
 ]
 
 # ── Apply patches ───────────────────────────────────────────────────────────
@@ -633,8 +681,20 @@ def main():
             problems += file_problems
             if text is not None:
                 planned.append((target, text, label))
+        for source, target, label in ADDED_FILES:
+            if not source.exists():
+                # Nothing depends on it: workhorse.py's call to it is wrapped in try/except
+                print(f"  WARNING: {source} is missing, so {label} was not added to pytti-core.")
+                continue
+            text = source.read_text(encoding="utf-8")
+            try:
+                current = target.read_text(encoding="utf-8")
+            except (FileNotFoundError, UnicodeDecodeError):
+                current = None  # missing, or damaged: write it again
+            if current != text:
+                planned.append((target, text, label))
     except OSError as e:
-        print(f"  ERROR: Could not read {target}: {e.strerror or e}")
+        print(f"  ERROR: Could not read {e.filename or target}: {e.strerror or e}")
         return 2
 
     # Several patches depend on each other across files, so apply all or nothing
@@ -652,7 +712,7 @@ def main():
     swapped = 0
     try:
         for (target, text, _), temp in zip(planned, temps):
-            if not os.access(target, os.W_OK):
+            if target.exists() and not os.access(target, os.W_OK):
                 raise PermissionError(errno.EACCES, "The file is read-only")
             temp.write_text(text, encoding="utf-8")
         for (target, _, label), temp in zip(planned, temps):
