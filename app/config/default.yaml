@@ -139,7 +139,7 @@ display_scale: 1
 save_every: 0
 
 breath_mode: false
-backups: 0  # only Video Source mode reads backups; the UI raises this for it automatically
+backups: 2  # Resume Render continues from these; the UI keeps at least 2, and raises it as Video Source mode needs
 show_graphs: false
 approximate_vram_usage: false
 use_tensorboard: false

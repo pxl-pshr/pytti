@@ -4,9 +4,10 @@ patch_gradio.py
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, Video Source and video mask conversion,
 Video Source end of video, prompt mask positions, output and backup folders,
-VQGAN downloads, audio input, the folders models load from), plus model_mirror.py,
-which fetches models from PyTTI Portable's mirror on Hugging Face and picks those
-folders, and AdaBins' torch.hub branch.
+resuming from backups, VQGAN downloads, audio input, audio variables in 2D camera
+moves, the folders models load from), plus model_mirror.py, which fetches models
+from PyTTI Portable's mirror on Hugging Face and picks those folders, and AdaBins'
+torch.hub branch.
 
 Speed patches to pytti-core and kornia leave what a render computes unchanged and cut
 the time the CPU and GPU spend waiting for each other.
@@ -197,6 +198,52 @@ PYTTI_WORKHORSE_PATCHES = [
         '\n'
         '            model_artifacts_path = vqgan_folder(params)\n',
     ),
+    # Resume (restore=true, which the UI's Resume Render sets): without a backup to continue
+    # from, the render stopped with FileNotFoundError, or tried to load a file named "None".
+    # It now starts from the beginning with a warning.
+    (
+        '    # NB: `backup/` dir probably not working at present\n'
+        '    if restore and restore_run == latest:\n'
+        '        _, restore_run = get_last_file(\n'
+        '            f"backup/{params.file_namespace}",\n'
+        r'            f"^(?P<pre>{re.escape(params.file_namespace)}\\(?)(?P<index>\\d*)(?P<post>\\)?_\\d+\\.bak)$",' '\n'
+        '        )\n',
+        '    if restore and restore_run == latest:\n'
+        '        restore_run = None\n'
+        '        if os.path.isdir(f"backup/{params.file_namespace}"):\n'
+        '            _, restore_run = get_last_file(\n'
+        '                f"backup/{params.file_namespace}",\n'
+        r'                f"^(?P<pre>{re.escape(params.file_namespace)}\\(?)(?P<index>\\d*)(?P<post>\\)?_\\d+\\.bak)$",' '\n'
+        '            )\n'
+        '        if restore_run is None:\n'
+        '            logger.warning(\n'
+        '                f"There is no backup in backup/{params.file_namespace} to resume from, "\n'
+        '                "so the render starts from the beginning."\n'
+        '            )\n'
+        '            restore = False\n',
+    ),
+    # A backup holds only tensors, so load it as tensors only: then a backup file can't run code
+    (
+        '                logger.info("restoring from", filename)\n'
+        '                img.load_state_dict(\n'
+        '                    torch.load(f"backup/{params.file_namespace}/{filename}")\n'
+        '                )\n',
+        '                img.load_state_dict(\n'
+        '                    torch.load(f"backup/{params.file_namespace}/{filename}", weights_only=True)\n'
+        '                )\n',
+    ),
+    # Frame n and its backup are saved before step n * save_every - 1 runs. Resuming at step
+    # n * save_every skipped that step, and the camera move with it when one was due; resume
+    # with it instead, which saves frame n again, unchanged.
+    (
+        '            i = restore_frame * params.save_every\n'
+        '        else:\n'
+        '            i = 0\n',
+        '            i = max(0, restore_frame * params.save_every - 1)\n'
+        '            logger.info(f"Resuming from {filename}: frame {restore_frame}, step {i}")\n'
+        '        else:\n'
+        '            i = 0\n',
+    ),
 ]
 
 # ── pytti-core patches: ImageGuide.py ──────────────────────────────────────
@@ -365,6 +412,20 @@ PYTTI_LOSSORCH_PATCHES = [
     (
         '                f"init image ({params.init_image})",',
         '                f"init image",',
+    ),
+]
+
+# ── pytti-core patches: OpticalFlowLossClass.py ──────────────────────────────
+
+PYTTI_OPTICALFLOW = SITE_PACKAGES / "pytti" / "LossAug" / "OpticalFlowLossClass.py"
+
+PYTTI_OPTICALFLOW_PATCHES = [
+    # Video Source's long-term optical flow reloads earlier frames from the run's backups,
+    # which after Resume Render include ones from before it. They hold only tensors, so
+    # load them as tensors only: then a backup file can't run code.
+    (
+        '            state_dict = torch.load(path, map_location=device)\n',
+        '            state_dict = torch.load(path, map_location=device, weights_only=True)\n',
     ),
 ]
 
@@ -669,6 +730,30 @@ PYTTI_AUDIOPARSE_PATCHES = [
         '            if sample_offset >= len(self.audio_samples):\n'
         '                break  # the end of the track: no samples left\n'
         '            cur_maxima = bp_filtered(self.audio_samples[sample_offset:sample_offset + self.window_size], filters)\n',
+    ),
+]
+
+# ── pytti-core patches: Transforms.py ─────────────────────────────────────────
+
+PYTTI_TRANSFORMS = SITE_PACKAGES / "pytti" / "Transforms.py"
+
+PYTTI_TRANSFORMS_PATCHES = [
+    # An audio variable used bare in a 2D camera move (zoom_x_2d: 'fLo*20') is a numpy
+    # float64, which made the 2D move's matrix float64 and the render stop with "expected
+    # scalar type Float but found Double". The matrix now has the image's type.
+    (
+        '                [zx * math.sin(theta), zy * math.cos(theta), ty],\n'
+        '            ]\n'
+        '        )\n'
+        '        .unsqueeze(0)\n'
+        '        .to(device)\n'
+        '    )\n',
+        '                [zx * math.sin(theta), zy * math.cos(theta), ty],\n'
+        '            ]\n'
+        '        )\n'
+        '        .unsqueeze(0)\n'
+        '        .to(device, tensor.dtype)\n'
+        '    )\n',
     ),
 ]
 
@@ -1210,11 +1295,13 @@ TARGETS = [
     (PYTTI_IMAGEGUIDE, PYTTI_IMAGEGUIDE_PATCHES, "ImageGuide.py"),
     (PYTTI_UPDATEFUNC, PYTTI_UPDATEFUNC_PATCHES, "update_func.py"),
     (PYTTI_LOSSORCH, PYTTI_LOSSORCH_PATCHES, "LossOrchestratorClass.py"),
+    (PYTTI_OPTICALFLOW, PYTTI_OPTICALFLOW_PATCHES, "OpticalFlowLossClass.py"),
     (PYTTI_MSELOSS, PYTTI_IMAGE_PROMPT_PATCHES, "MSELossClass.py"),
     (PYTTI_LATENTLOSS, PYTTI_IMAGE_PROMPT_PATCHES, "LatentLossClass.py"),
     (PYTTI_ROTOSCOPER, PYTTI_ROTOSCOPER_PATCHES, "rotoscoper.py"),
     (PYTTI_PROMPT, PYTTI_PROMPT_PATCHES, "Prompt.py"),
     (PYTTI_AUDIOPARSE, PYTTI_AUDIOPARSE_PATCHES, "AudioParse.py"),
+    (PYTTI_TRANSFORMS, PYTTI_TRANSFORMS_PATCHES, "Transforms.py"),
     (PYTTI_VQGAN, PYTTI_VQGAN_PATCHES, "vqgan.py"),
     (ADABINS_UNET, ADABINS_UNET_PATCHES, "unet_adaptive_bins.py"),
     (PYTTI_PERCEPTOR, PYTTI_PERCEPTOR_PATCHES, "Perceptor/__init__.py"),

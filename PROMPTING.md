@@ -45,7 +45,7 @@ Scenes run one after another. Each lasts `steps_per_scene` steps, which is `step
 3. **No square brackets around text.** A prompt that starts with `[` and ends with `]` is opened as an image file or URL.
 4. **A negative weight always gets a stop.** Write `text:-1:-.95`, never `text:-1`. Without a stop the engine keeps pushing away forever and draws "anti-text" artifacts.
 5. **No underscore inside a weight.** The first underscore after the weight starts a mask, so a weight like `2*my_var` is cut in half. Underscores in the text part are fine.
-6. **One short phrase per prompt.** CLIP reads at most 77 tokens per prompt, roughly 50 words, and the render stops with an error above that. Aim for 3 to 12 words and split longer ideas into several prompts.
+6. **One short phrase per prompt.** CLIP reads at most 77 tokens per prompt, roughly 50 words, and the render stops with an error above that; Start Render reports such a prompt before any model loads. Aim for 3 to 12 words and split longer ideas into several prompts.
 7. **Scene Prefix ends with a pipe and Scene Suffix starts with one.** Otherwise the last prefix prompt and the first scene prompt fuse into one phrase. The UI adds a missing pipe when it saves, but write them anyway.
 8. **No empty parts.** A trailing colon such as `fog:` stops the render.
 

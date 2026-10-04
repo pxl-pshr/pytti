@@ -7,7 +7,10 @@ What changed in each version of PyTTI Portable, newest first.
 ### Added
 
 - Load Config starts with a (defaults) entry, which fills in the settings from `config/default.yaml` with a blank Config Name. A page reload brings back the preset last loaded or saved, as it is on disk, instead of resetting every field to the defaults.
-- The system check warns when Windows' Smart App Control is on or in evaluation mode, and `launch.bat` warns when it is on, since Windows can switch it on after the install. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551".
+- Resume Render, on the Run and Output tabs, continues a render that was stopped, failed or cut off by a restart from its newest backup, in its own run folder and with the settings it was started with. Its frames continue the run's numbering, so Encode Video makes one video of them, and its log is added to the run's `render.log`. After Stop Render or a failed render, the status box says from which frame it can continue.
+- When a render starts, its log shows how many frames and seconds of video it will make, the models it downloads first and their sizes, and the disk space it needs next to what is free. The status box warns when the render is shorter than its Video Source clip or audio, giving the Steps per Scene that covers it, when the clip is stretched to another shape, when the audio runs out before the render ends or Audio Offset is past its end, and when the disk is too full.
+- Start Render reports a scene prompt longer than the 77 tokens CLIP reads, naming it, before any model loads. Load and Save mention it too.
+- The system check warns when Windows' Smart App Control is on or in evaluation mode, and `launch.bat` warns when it is on, since Windows can switch it on after the install. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551". When a render fails that way, the status box explains how to turn Smart App Control off, and README.md has a troubleshooting entry for it.
 - Tests that need no GPU, in `tests/`, for the pytti-core and kornia patches, the settings checks behind Save and Start Render, and the files PyTTI Portable downloads from its Hugging Face mirror. GitHub Actions runs them on every push and pull request, and checks the mirror weekly. README.md says how to run them.
 
 ### Changed
@@ -22,11 +25,15 @@ What changed in each version of PyTTI Portable, newest first.
 - `LICENSE` holds only the standard MIT text, so GitHub recognizes the license. The notice for the parts derived from pytti-core moved to `NOTICE`.
 - Models download to the pytti folder's `cache\models` instead of `%USERPROFILE%\.cache`, and Video Source conversions go to `cache\video` instead of `%TEMP%\pytti-video-cache`, where copies no render has used for 30 days are deleted. Models that earlier versions downloaded to `%USERPROFILE%\.cache` are still used from there, so nothing is downloaded again; the README's [Disk space](README.md#disk-space) section says how to move them into the pytti folder.
 - `install.bat` keeps pip's download cache and temporary files in the pytti folder, in `cache\pip` and `cache\tmp`, instead of `%LOCALAPPDATA%\pip\cache` and `%TEMP%`. Installing on another drive no longer also needs 8 GB free on the drive with the temp folder, usually C:; the system check asks for about 17 GB on the install drive only.
+- The help for each CLIP model gives its download size.
+- Every render keeps at least 2 backups, for Resume Render: Backups defaults to 2, and a preset's lower value is raised when the render starts, without changing the preset. With Limited Palette each takes about 20 MB at 512x512.
 
 ### Fixed
 
 - PyTTI opens behind a proxy set in Windows' settings that can't reach the PC itself, such as some company, school or VPN proxies. Launching stopped with "When localhost is not accessible, a shareable link must be created", or with a connection error. Model downloads still go through the proxy.
 - The VQGAN Model help no longer says the wikiart download is unreliable, and gives each model's download size.
+- An audio variable used on its own in a 2D camera move, such as `zoom_x_2d: 'fLo*20'`, stopped the render with "expected scalar type Float but found Double".
+- A preset with `restore: true` stopped the render with an error, since a new render's folder has no backups to restore from. pytti now starts from the beginning with a warning; Resume Render continues a render instead.
 
 ### Security
 
@@ -34,6 +41,7 @@ What changed in each version of PyTTI Portable, newest first.
 - Pillow 10.4.0 replaces 9.4.0, whose WebP decoder had a heap overflow that a crafted image could exploit (CVE-2023-4863). pytti opens init images, image prompts, masks and target palettes with Pillow, including images it downloads from a URL.
 - hydra-core 1.3.7 replaces 1.3.2. It adds Hydra's checks against dangerous targets in configs, which Hydra describes as defense in depth rather than a complete security boundary.
 - When the model mirror can't be reached, VQGAN files downloaded from their original sources are checked against the mirror's SHA-256 before PyTorch loads them, and coco downloads over HTTPS. A file that doesn't match is deleted with an error.
+- Backups are loaded as plain tensors, when a render is resumed and when Video Source mode reloads earlier frames, so a backup file in a run folder can't run code.
 
 ## [1.1.0-beta] - 2026-10-04
 
