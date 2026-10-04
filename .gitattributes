@@ -1,2 +1,8 @@
 # cmd.exe can mis-locate :labels in batch files with LF-only line endings
 *.bat text eol=crlf
+
+# Not needed to install or run PyTTI Portable (tests, GitHub Actions workflows, the README's
+# images): left out of GitHub's Download ZIP and release source archives, but not git clone
+/tests export-ignore
+/.github export-ignore
+/examples export-ignore

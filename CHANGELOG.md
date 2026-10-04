@@ -27,6 +27,7 @@ What changed in each version of PyTTI Portable, newest first.
 - `install.bat` keeps pip's download cache and temporary files in the pytti folder, in `cache\pip` and `cache\tmp`, instead of `%LOCALAPPDATA%\pip\cache` and `%TEMP%`. Installing on another drive no longer also needs 8 GB free on the drive with the temp folder, usually C:; the system check asks for about 17 GB on the install drive only.
 - The help for each CLIP model gives its download size.
 - Every render keeps at least 2 backups, for Resume Render: Backups defaults to 2, and a preset's lower value is raised when the render starts, without changing the preset. With Limited Palette each takes about 20 MB at 512x512.
+- GitHub's Download ZIP leaves out what installing and running PyTTI Portable doesn't need: the tests, the GitHub Actions workflows and the README's example images (15 MB). `git clone` still includes them.
 
 ### Fixed
 

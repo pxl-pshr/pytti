@@ -110,8 +110,8 @@ pytti/
 │   └── config/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
-├── tests/               # Tests that need no GPU (see Tests)
-└── examples/            # Sample renders
+├── tests/               # Tests that need no GPU (see Tests; not in the ZIP download)
+└── examples/            # Sample renders (not in the ZIP download)
 ```
 
 ## How It Works
@@ -136,7 +136,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 
 ## Tests
 
-The tests in `tests/` need no GPU and leave the `python` folder alone. They apply the pytti-core and kornia patches to the pristine pinned packages, run the settings checks behind Save and Start Render on the presets in the repo and on presets that must be accepted or refused, and check that the files agree on model names and wheels. Run them from the pytti folder with Python 3.10, in a virtual environment of their own:
+The tests in `tests/` need no GPU and leave the `python` folder alone. They apply the pytti-core and kornia patches to the pristine pinned packages, run the settings checks behind Save and Start Render on the presets in the repo and on presets that must be accepted or refused, and check that the files agree on model names and wheels. GitHub's Download ZIP leaves them out, so clone the repository to run them. Run them from the pytti folder with Python 3.10, in a virtual environment of their own:
 
 ```
 py -3.10 -m venv .venv
