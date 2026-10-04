@@ -600,6 +600,26 @@ PYTTI_VQGAN_PATCHES = [
         '            ) from e\n'
         '        with vram_usage_mode("VQGAN"):\n',
     ),
+    # pytti deletes the training loss right after loading. Building it from the imagenet and
+    # wikiart configs (VQLPIPSWithDiscriminator) downloaded VGG16 and LPIPS weights just for
+    # that; DummyLoss builds nothing, and init_from_ckpt skips the unused loss.* weights.
+    (
+        '    config = OmegaConf.load(config_path)\n'
+        '    if config.model.target == "taming.models.vqgan.VQModel":\n',
+        '    config = OmegaConf.load(config_path)\n'
+        '    if "lossconfig" in config.model.params:\n'
+        '        config.model.params.lossconfig = {"target": "taming.modules.losses.DummyLoss"}\n'
+        '    if config.model.target == "taming.models.vqgan.VQModel":\n',
+    ),
+    # wikiart's host (eaidata.bmk.sh) is gone; pixray's GitHub release has the same files
+    (
+        '        "http://eaidata.bmk.sh/data/Wikiart_16384/wikiart_f16_16384_8145600.yaml"\n',
+        '        "https://github.com/pixray/pixray/releases/download/v1.7.1/vqgan_wikiart_16384.yaml"\n',
+    ),
+    (
+        '        "http://eaidata.bmk.sh/data/Wikiart_16384/wikiart_f16_16384_8145600.ckpt"\n',
+        '        "https://github.com/pixray/pixray/releases/download/v1.7.1/vqgan_wikiart_16384.ckpt"\n',
+    ),
 ]
 
 # ── AdaBins patches: models/unet_adaptive_bins.py ───────────────────────────

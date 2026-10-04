@@ -98,6 +98,22 @@ GEN_EFFICIENTNET = (
     70087,
 )
 VQGAN_MODELS = {  # vqgan_model -> (config, checkpoint), saved as <name>.yaml and <name>.ckpt
+    "imagenet": (
+        ("vqgan/imagenet.yaml", "00e2c6189926f1d89ecfef73e9598db77981c1982f0555fbade963ffd16143c7", 692),
+        ("vqgan/imagenet.ckpt", "845a68805098cb666420d5db93df53f3a3b6dd443e6dd85c05759c5b998cd663", 980092370),
+    ),
+    "wikiart": (
+        ("vqgan/wikiart.yaml", "6e78241d2828ff35b8381839ce249c24a6c468ed429760d33a25e98e7f24499a", 920),
+        ("vqgan/wikiart.ckpt", "bd08bb46301f98be1712bb2be9f8868cea30b53137cd985d4d6e8da8b3e02c36", 1005327541),
+    ),
+    "sflckr": (
+        ("vqgan/sflckr.yaml", "c27f012996f3f1f02580f063be47fd60bdd8528efb04d7318b2cbe8a86505b1b", 1603),
+        ("vqgan/sflckr.ckpt", "8a8adea3da8dab412675772831370dd948e0aa97bb11a9488a2f328b58dbc929", 4263525412),
+    ),
+    "openimages": (
+        ("vqgan/openimages.yaml", "91110bab325067b37f85d1e75895a837d59c292bae4f3097f80c518714d5caff", 745),
+        ("vqgan/openimages.ckpt", "5cd6c74810ab97e00e942c25403f73afc081e8b19987b31ec0d9ff5b68e7ab14", 376581823),
+    ),
     "coco": (
         (
             "vqgan/coco_first_stage.yaml",
