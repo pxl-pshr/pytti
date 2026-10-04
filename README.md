@@ -100,7 +100,12 @@ pytti/
 ├── python/              # Embedded Python and all packages (created by install.bat)
 ├── cache/               # pip's download cache, models and Video Source conversions (see Disk space)
 ├── app/
-│   ├── ui.py            # Gradio web UI
+│   ├── ui.py            # Gradio web UI: the page and its buttons (launch.bat runs this)
+│   ├── presets.py       # Loading, saving and checking presets
+│   ├── render.py        # Starting, stopping and resuming renders; live log and progress
+│   ├── runs.py          # Runs on disk, latest frame and Encode Video
+│   ├── help_text.py     # Field tips and the FAQ tab
+│   ├── paths.py         # The folders the UI uses
 │   ├── patch_pytti.py   # Patches to pytti-core, AdaBins and kornia (applied on install and every launch)
 │   ├── model_mirror.py  # Fetches models from the Hugging Face mirror (copied into pytti-core)
 │   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.

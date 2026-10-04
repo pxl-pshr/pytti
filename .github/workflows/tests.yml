@@ -1,7 +1,7 @@
 name: Tests
 
 # The GPU-free tests in tests/: the patches on the pristine pinned packages, the settings
-# checks in app/ui.py, and what the files must agree on. mirror.yml checks the model mirror.
+# checks in app/presets.py, and what the files must agree on. mirror.yml checks the model mirror.
 on:
   push:
   pull_request:

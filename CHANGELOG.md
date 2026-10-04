@@ -29,6 +29,7 @@ What changed in each version of PyTTI Portable, newest first.
 - Every render keeps at least 2 backups, for Resume Render: Backups defaults to 2, and a preset's lower value is raised when the render starts, without changing the preset. With Limited Palette each takes about 20 MB at 512x512.
 - GitHub's Download ZIP leaves out what installing and running PyTTI Portable doesn't need: the tests, the GitHub Actions workflows and the README's example images (15 MB). `git clone` still includes them.
 - `app\patch_gradio.py` is now `app\patch_pytti.py`: it patches pytti-core, AdaBins and kornia, not Gradio.
+- `app\ui.py` is split into modules next to it: `presets.py`, `render.py`, `runs.py`, `help_text.py` and `paths.py`. `ui.py` still builds the page, and `launch.bat` still runs it.
 
 ### Fixed
 

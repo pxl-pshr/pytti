@@ -1,5 +1,5 @@
 """
-The settings checks in app/ui.py that decide what Save and Start Render accept, on the
+The settings checks in app/presets.py that decide what Save and Start Render accept, on the
 presets in the repo and on presets written here. Presets are loaded through the UI's own
 Load Config callback, so each check sees the values the UI's fields would show.
 """
@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import paths
+import presets
 import ui
 
 
@@ -16,8 +18,8 @@ def form():
     """The UI's Load Config callback, and the labels of the fields it fills."""
     demo = ui.make_ui()
     load = next(fn for fn in demo.fns.values() if fn.name == "load_existing")
-    fields = load.outputs[:len(ui.CONF_FIELDS)]  # the settings come first, in CONF_FIELDS order
-    return SimpleNamespace(load_existing=load.fn, labels={key: field.label for key, field in zip(ui.CONF_FIELDS, fields)})
+    fields = load.outputs[:len(presets.CONF_FIELDS)]  # the settings come first, in CONF_FIELDS order
+    return SimpleNamespace(load_existing=load.fn, labels={key: field.label for key, field in zip(presets.CONF_FIELDS, fields)})
 
 
 @pytest.fixture
@@ -25,7 +27,7 @@ def conf_dir(tmp_path, monkeypatch):
     """An empty config/conf for the presets a test writes."""
     folder = tmp_path / "conf"
     folder.mkdir()
-    monkeypatch.setattr(ui, "CONF_DIR", folder)
+    monkeypatch.setattr(paths, "CONF_DIR", folder)
     return folder
 
 
@@ -34,10 +36,10 @@ def load(form, monkeypatch):
     """Load a preset as Load Config does: (the values its fields show, its keys that have no field)."""
     monkeypatch.setattr(ui, "_last_preset", None)  # load_existing remembers the preset for page reloads
 
-    def load(name=ui.DEFAULTS_CHOICE):
-        preset = {} if name == ui.DEFAULTS_CHOICE else ui.load_conf(name)
-        values = dict(zip(ui.CONF_FIELDS, form.load_existing(name)))
-        return values, {key: value for key, value in preset.items() if key not in ui.CONF_KEYS}
+    def load(name=presets.DEFAULTS_CHOICE):
+        preset = {} if name == presets.DEFAULTS_CHOICE else presets.load_conf(name)
+        values = dict(zip(presets.CONF_FIELDS, form.load_existing(name)))
+        return values, {key: value for key, value in preset.items() if key not in presets.CONF_KEYS}
     return load
 
 
@@ -53,9 +55,9 @@ def load_preset(conf_dir, load):
 def render_problems(form, values, extras):
     """What stops Start Render before it renders, gathered as _save_preset gathers it."""
     return (
-        ui.conf_problems("preset", values, form.labels)
-        + ui.missing_files(values, form.labels, extras)
-        + ui.preset_risks(values, extras, form.labels)[0]
+        presets.conf_problems("preset", values, form.labels)
+        + presets.missing_files(values, form.labels, extras)
+        + presets.preset_risks(values, extras, form.labels)[0]
     )
 
 
@@ -71,24 +73,24 @@ input_audio_filters:
 # ── The presets in the repo ─────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", [ui.DEFAULTS_CHOICE, "_empty.yaml"])
+@pytest.mark.parametrize("name", [presets.DEFAULTS_CHOICE, "_empty.yaml"])
 def test_the_presets_in_the_repo_render(form, load, name):
     """default.yaml, alone and with conf/_empty.yaml, as a render combines them."""
     values, extras = load(name)
     assert render_problems(form, values, extras) == []
-    assert ui.preset_risks(values, extras, form.labels) == ([], [])
-    assert ui._conf_notes({**ui.build_conf_dict(**values), **extras}) == []
+    assert presets.preset_risks(values, extras, form.labels) == ([], [])
+    assert presets._conf_notes({**presets.build_conf_dict(**values), **extras}) == []
 
 
 def test_saving_and_loading_keeps_every_setting(load, load_preset):
     values, extras = load_preset(AUDIO)
     assert extras  # input_audio_filters has no field, and is kept
-    ui.write_conf("saved.yaml", ui.preset_base("saved", extras), values)
+    presets.write_conf("saved.yaml", presets.preset_base("saved", extras), values)
     assert load("saved.yaml") == (values, extras)
 
 
 def test_every_field_has_a_default():
-    assert set(ui.CONF_FIELDS) - set(ui.load_defaults()) == set()
+    assert set(presets.CONF_FIELDS) - set(presets.load_defaults()) == set()
 
 
 # ── Presets that could run code, and expressions pytti can't evaluate ───────
@@ -135,7 +137,7 @@ def test_presets_that_dont_render(form, load_preset, preset, problem):
 
 def test_another_models_folder_gets_a_note(form, load_preset):
     values, extras = load_preset("models_parent_dir: D:/models\n")
-    problems, notes = ui.preset_risks(values, extras, form.labels)
+    problems, notes = presets.preset_risks(values, extras, form.labels)
     assert problems == []
     assert any("models_parent_dir" in note for note in notes)
 
@@ -162,7 +164,7 @@ def test_another_models_folder_gets_a_note(form, load_preset):
     ("1+" * 10000 + "1", "mistake"),  # nested deep enough to crash Python 3.10's parser
 ])
 def test_expression_check(text, verdict):
-    found = ui._expression_problem(text, ui._EXPRESSION_NAMES)
+    found = presets._expression_problem(text, presets._EXPRESSION_NAMES)
     assert (found and ("code" if found[0] else "mistake")) == verdict
 
 
@@ -184,7 +186,7 @@ CONF_PROBLEMS = [
     ("ok", {"scenes": " || "}, "Scenes can't be empty"),
     ("ok", {"animation_mode": "Video Source"}, "Set a Video Path for Video Source mode."),
     ("ok", {"animation_mode": "Video Source", "video_path": "clip.mp4", "frame_stride": 0}, "{frame_stride} must be at least 1."),
-    ("ok", dict.fromkeys(ui.CLIP_MODELS, False), "Tick at least one CLIP model."),
+    ("ok", dict.fromkeys(presets.CLIP_MODELS, False), "Tick at least one CLIP model."),
     ("ok", {"translate_x": " "}, "{translate_x} can't be blank in 3D mode."),
     ("ok", {"seed": "1.5"}, "Seed must be a whole number"),
     ("ok", {"seed": str(2**64)}, "Seed must be between"),
@@ -204,7 +206,7 @@ CONF_PROBLEMS = [
 @pytest.mark.parametrize("name, changes, problem", CONF_PROBLEMS)
 def test_conf_problems(form, load, name, changes, problem):
     values, _ = load()
-    problems = ui.conf_problems(name, {**values, **changes}, form.labels)
+    problems = presets.conf_problems(name, {**values, **changes}, form.labels)
     assert any(problem.format(**form.labels) in p for p in problems), problems
 
 
@@ -218,7 +220,7 @@ def test_conf_problems(form, load, name, changes, problem):
 ])
 def test_conf_problems_accepts(form, load, name, changes):
     values, _ = load()
-    assert ui.conf_problems(name, {**values, **changes}, form.labels) == []
+    assert presets.conf_problems(name, {**values, **changes}, form.labels) == []
 
 
 # ── missing_files ───────────────────────────────────────────────────────────
@@ -232,7 +234,7 @@ def test_missing_files(form, load, tmp_path):
     gone = tmp_path / "gone.png"
 
     def missing(extras=None, **changes):
-        return ui.missing_files({**values, **changes}, labels, extras)
+        return presets.missing_files({**values, **changes}, labels, extras)
 
     def not_found(path, key):
         return [f"File not found: {path} ({labels[key]})."]
@@ -260,24 +262,24 @@ def test_missing_files(form, load, tmp_path):
 def test_not_loaded_here(conf_dir):
     (conf_dir / "mine.yaml").write_text("scenes: a forest\n", encoding="utf-8")
     (conf_dir / "_hidden.yaml").write_text("", encoding="utf-8")
-    loaded = ("mine.yaml", ui._conf_mtime("mine.yaml"), None)
-    assert ui._not_loaded_here("mine.yaml", None)  # e.g. its name typed in over other settings
-    assert ui._not_loaded_here("mine.yaml", ("other.yaml", 1, None))
-    assert not ui._not_loaded_here("mine.yaml", loaded)
-    assert not ui._not_loaded_here("MINE.yaml", loaded)  # Windows file names ignore case
-    assert not ui._not_loaded_here("new.yaml", None)  # nothing to replace
-    assert not ui._not_loaded_here("_hidden.yaml", None)  # conf_problems refuses the name instead
+    loaded = ("mine.yaml", presets._conf_mtime("mine.yaml"), None)
+    assert presets._not_loaded_here("mine.yaml", None)  # e.g. its name typed in over other settings
+    assert presets._not_loaded_here("mine.yaml", ("other.yaml", 1, None))
+    assert not presets._not_loaded_here("mine.yaml", loaded)
+    assert not presets._not_loaded_here("MINE.yaml", loaded)  # Windows file names ignore case
+    assert not presets._not_loaded_here("new.yaml", None)  # nothing to replace
+    assert not presets._not_loaded_here("_hidden.yaml", None)  # conf_problems refuses the name instead
 
 
 def test_changed_on_disk(conf_dir):
     path = conf_dir / "mine.yaml"
     path.write_text("scenes: a forest\n", encoding="utf-8")
-    stamp = ("mine.yaml", ui._conf_mtime("mine.yaml"), None)
-    assert ui._changed_on_disk("mine.yaml", stamp) is None
+    stamp = ("mine.yaml", presets._conf_mtime("mine.yaml"), None)
+    assert presets._changed_on_disk("mine.yaml", stamp) is None
     edited = stamp[1] + 10**9
     os.utime(path, ns=(edited, edited))
-    assert ui._changed_on_disk("mine.yaml", stamp) == edited
-    assert ui._changed_on_disk("other.yaml", stamp) is None
+    assert presets._changed_on_disk("mine.yaml", stamp) == edited
+    assert presets._changed_on_disk("other.yaml", stamp) is None
 
 
 @pytest.mark.parametrize("content, problem", [
@@ -287,8 +289,8 @@ def test_changed_on_disk(conf_dir):
 ])
 def test_unreadable_presets(conf_dir, content, problem):
     (conf_dir / "bad.yaml").write_bytes(content)
-    with pytest.raises(ui.PresetError) as error:
-        ui.load_conf("bad.yaml")
+    with pytest.raises(presets.PresetError) as error:
+        presets.load_conf("bad.yaml")
     assert problem in str(error.value)
 
 
@@ -297,22 +299,22 @@ def test_unreadable_presets(conf_dir, content, problem):
 
 def test_conf_notes(load):
     values, _ = load()
-    data = ui.build_conf_dict(**{**values, "animation_mode": "Video Source", "flow_long_term_samples": 2, "backups": 0})
-    assert any("Backups raised to 5" in note for note in ui._conf_notes(data))
+    data = presets.build_conf_dict(**{**values, "animation_mode": "Video Source", "flow_long_term_samples": 2, "backups": 0})
+    assert any("Backups raised to 5" in note for note in presets._conf_notes(data))
     assert data["backups"] == 5  # long-term flow reads the frame 2^2 back from the backups
 
-    data = ui.build_conf_dict(**{**values, "pre_animation_steps": 100, "breath_mode": True})
-    notes = " ".join(ui._conf_notes(data))
+    data = presets.build_conf_dict(**{**values, "pre_animation_steps": 100, "breath_mode": True})
+    notes = " ".join(presets._conf_notes(data))
     assert "multiple of Steps per Frame" in notes
     assert "Breath Mode does nothing without an Init Image" in notes
 
-    notes = ui._conf_notes({**ui.build_conf_dict(**values), "scnes": "a forest"})
+    notes = presets._conf_notes({**presets.build_conf_dict(**values), "scnes": "a forest"})
     assert any("scnes (did you mean scenes?)" in note for note in notes)
 
 
 def test_references_are_resolved():
     data = {"steps_per_frame": 50, "save_every": "${steps_per_frame}", "seed": "${now:%f}", "a": "${b}", "b": "${a}"}
-    resolved = ui._resolve_references(data)
+    resolved = presets._resolve_references(data)
     assert resolved["save_every"] == 50
     assert resolved["seed"] == "${now:%f}"  # a resolver, left for Hydra
     assert resolved["a"] in ("${a}", "${b}")  # a loop ends
@@ -324,29 +326,29 @@ def test_references_are_resolved():
 def test_clean_path(tmp_path):
     image = tmp_path / "an image.png"
     image.write_bytes(b"")
-    assert ui._clean_path(f' "{image}" ') == str(image)
-    assert ui._clean_path("https://example.com/a.png") == "https://example.com/a.png"
+    assert presets._clean_path(f' "{image}" ') == str(image)
+    assert presets._clean_path("https://example.com/a.png") == "https://example.com/a.png"
     # pytti opens files from the render's folder, so a relative path is made absolute if found
-    assert ui._clean_path("docs/images/ui.png") == str((ui.PORTABLE_ROOT / "docs" / "images" / "ui.png").resolve())
-    assert ui._clean_path("nowhere/a.png") == "nowhere/a.png"
+    assert presets._clean_path("docs/images/ui.png") == str((paths.PORTABLE_ROOT / "docs" / "images" / "ui.png").resolve())
+    assert presets._clean_path("nowhere/a.png") == "nowhere/a.png"
 
 
 def test_split_image_prompts():
     # A colon followed by a slash or backslash is part of a path, not a weight
-    assert ui._split_image_prompts(r"C:\img\a.png:2 | https://example.com/b.png | | c.png:1_C:\m.png") == [
+    assert presets._split_image_prompts(r"C:\img\a.png:2 | https://example.com/b.png | | c.png:1_C:\m.png") == [
         [r"C:\img\a.png", "2"], ["https://example.com/b.png"], ["c.png", r"1_C:\m.png"],
     ]
 
 
 def test_clean_scenes():
-    assert ui._clean_scenes(" a  forest |  fog || \n || night\n sky ") == "a forest | fog || night sky"
+    assert presets._clean_scenes(" a  forest |  fog || \n || night\n sky ") == "a forest | fog || night sky"
 
 
 @pytest.mark.parametrize("text, saved", [("0", ""), ("0.0", ""), ("", ""), (None, ""), (" 1 ", "1"), ("sin(t)", "sin(t)")])
 def test_weight_value(text, saved):
-    assert ui._weight_value(text) == saved  # pytti skips a loss only when its weight is blank
+    assert presets._weight_value(text) == saved  # pytti skips a loss only when its weight is blank
 
 
-@pytest.mark.parametrize("text, saved", [("", ui.RANDOM_SEED), (" 42 ", 42), ("-7", -7)])
+@pytest.mark.parametrize("text, saved", [("", presets.RANDOM_SEED), (" 42 ", 42), ("-7", -7)])
 def test_seed_value(text, saved):
-    assert ui._seed_value(text) == saved
+    assert presets._seed_value(text) == saved

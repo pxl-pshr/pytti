@@ -2,7 +2,7 @@
 
 This is the reference for writing prompts and presets for this app. Point an AI assistant at this file, or read it yourself, when you want a prompt built.
 
-It describes what the installed engine does. Every rule was checked against the pytti-core commit that `install.bat` pins (`b5070aa`), with the patches from `app/patch_pytti.py` applied, and against `app/ui.py`. PyTTI steers an image with CLIP instead of running a diffusion model, so habits from Stable Diffusion or Midjourney do not carry over: there are no comma lists, no `(word:1.2)` emphasis and no separate negative prompt box.
+It describes what the installed engine does. Every rule was checked against the pytti-core commit that `install.bat` pins (`b5070aa`), with the patches from `app/patch_pytti.py` applied, and against the UI's checks in `app/presets.py`. PyTTI steers an image with CLIP instead of running a diffusion model, so habits from Stable Diffusion or Midjourney do not carry over: there are no comma lists, no `(word:1.2)` emphasis and no separate negative prompt box.
 
 ## If you are an AI assistant
 
