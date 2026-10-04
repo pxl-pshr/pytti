@@ -1,0 +1,7 @@
+# What the tests need, at the versions in app/constraints.txt (no PyTorch, no GPU):
+#   python -m pip install -c app/constraints.txt -r tests/requirements.txt
+# gradio and PyYAML: app/ui.py imports them. loguru: app/model_mirror.py imports it.
+gradio
+PyYAML
+loguru
+pytest==9.1.1

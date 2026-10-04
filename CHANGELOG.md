@@ -8,6 +8,7 @@ What changed in each version of PyTTI Portable, newest first.
 
 - Load Config starts with a (defaults) entry, which fills in the settings from `config/default.yaml` with a blank Config Name. A page reload brings back the preset last loaded or saved, as it is on disk, instead of resetting every field to the defaults.
 - The system check warns when Windows' Smart App Control is on or in evaluation mode. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551".
+- Tests that need no GPU, in `tests/`, for the pytti-core and kornia patches, the settings checks behind Save and Start Render, and the files PyTTI Portable downloads from its Hugging Face mirror. GitHub Actions runs them on every push and pull request, and checks the mirror weekly. README.md says how to run them.
 
 ### Changed
 

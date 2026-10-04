@@ -15,6 +15,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Tests: the packages they download, and the virtual environment README.md suggests
+tests/.cache/
+.venv/
+
 # OS
 .DS_Store
 Thumbs.db

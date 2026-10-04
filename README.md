@@ -95,6 +95,7 @@ pytti/
 │   └── config/
 │       ├── default.yaml # Default render settings
 │       └── conf/        # User-saved presets
+├── tests/               # Tests that need no GPU (see Tests)
 └── examples/            # Sample renders
 ```
 
@@ -115,6 +116,18 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 - **The UI doesn't open, and the `launch.bat` window says `When localhost is not accessible, a shareable link must be created`**: something on this PC kept PyTTI from reaching its own page at 127.0.0.1, such as a firewall, antivirus or VPN program that blocks local connections. Proxies are already bypassed for that address. Don't set `share=True` as the message suggests: that puts the UI on a public link, where anyone who has it can start renders, and renders can run code.
 - **The install stopped partway**: run `install.bat` again. It offers to resume, or to delete the `python` folder and start over.
 - **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models, which are stored outside the pytti folder (see [Disk space](#disk-space)).
+
+## Tests
+
+The tests in `tests/` need no GPU and leave the `python` folder alone. They apply the pytti-core and kornia patches to the pristine pinned packages, run the settings checks behind Save and Start Render on the presets in the repo and on presets that must be accepted or refused, and check that the files agree on model names and wheels. Run them from the pytti folder with Python 3.10, in a virtual environment of their own:
+
+```
+py -3.10 -m venv .venv
+.venv\Scripts\python -m pip install -c app\constraints.txt -r tests\requirements.txt
+.venv\Scripts\python -m pytest tests
+```
+
+The first run downloads the wheels `install.bat` installs and kornia, about 105 MB, into `tests\.cache`. Later runs check them against their SHA-256 and take about 10 seconds. `tests\test_mirror.py` checks that every model and wheel is on the Hugging Face mirror with the listed size and SHA-256; add `-m "not mirror"` to leave it out. GitHub Actions runs the tests on every push and pull request (`.github/workflows/tests.yml`), and the mirror check weekly and whenever `app/model_mirror.py` or `install.bat` changes (`mirror.yml`).
 
 ## Resources
 
