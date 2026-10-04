@@ -90,6 +90,7 @@ pytti/
 │   ├── model_mirror.py  # Fetches models from the Hugging Face mirror (copied into pytti-core)
 │   ├── system_check.ps1 # Pre-install check: GPU, driver, disk space, etc.
 │   ├── deps_rev.txt     # Revision of install.bat's package list
+│   ├── constraints.txt  # Exact version of every package install.bat installs
 │   ├── outputs/         # Renders, one folder per run (created on first render)
 │   └── config/
 │       ├── default.yaml # Default render settings

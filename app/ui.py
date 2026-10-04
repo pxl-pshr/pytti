@@ -652,21 +652,20 @@ def _copy_file(src: Path, dst: Path):
 
 
 def _ffmpeg_exe() -> str | None:
-    """Find ffmpeg: python\\ffmpeg.exe, else the build bundled with imageio-ffmpeg, else one on PATH.
+    """Find ffmpeg: the build bundled with imageio-ffmpeg, else python\\ffmpeg.exe, else one on PATH.
 
     The bundled build is known to have the encoders the app relies on (libx264,
     prores_ks); one on PATH may not (LGPL builds leave out libx264). In the portable
     install it is copied next to python.exe as ffmpeg.exe, where pytti's own bare
     "ffmpeg" calls (Video Source conversion, audio) find it before anything on PATH.
+    The copy is replaced when it no longer matches, e.g. after imageio-ffmpeg is updated.
     """
     local = EMBEDDED_PYTHON.parent / "ffmpeg.exe"
-    if local.is_file():
-        return str(local)
     try:
         import imageio_ffmpeg
         bundled = imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        return shutil.which("ffmpeg")
+        return str(local) if local.is_file() else shutil.which("ffmpeg")
     if PYTHON_EXE == EMBEDDED_PYTHON:
         with contextlib.suppress(OSError):
             _copy_file(Path(bundled), local)
@@ -677,7 +676,7 @@ def _ffmpeg_exe() -> str | None:
 def _ffmpeg_folder(ffmpeg: str) -> str | None:
     """A folder holding this ffmpeg under the name ffmpeg.exe, for the render's PATH.
 
-    pytti runs a bare "ffmpeg"; the bundled binary is named like ffmpeg-win64-v4.2.2.exe,
+    pytti runs a bare "ffmpeg"; the bundled binary is named like ffmpeg-win-x86_64-v7.1.exe,
     so if it couldn't be copied next to python.exe, a copy goes in a temp folder.
     """
     path = Path(ffmpeg)

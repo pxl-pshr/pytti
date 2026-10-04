@@ -8,13 +8,14 @@ set "PYTHONNOUSERSITE=1"
 
 :: Ignore pip settings meant for the user's own Python, which can make every pip step
 :: fail: all pip.ini files (pip skips them only for a lowercase nul) and variables that
-:: require a virtualenv or install somewhere else
+:: require a virtualenv, install somewhere else or add constraints (step 5 sets its own)
 set "PIP_CONFIG_FILE=nul"
 set "PIP_REQUIRE_VIRTUALENV="
 set "PIP_REQUIRE_VENV="
 set "PIP_USER="
 set "PIP_TARGET="
 set "PIP_PREFIX="
+set "PIP_CONSTRAINT="
 
 :: Set further down when updating an existing install. An inherited value would make a
 :: new install skip steps 1-4
@@ -47,10 +48,12 @@ echo.
 echo %DIM%  ----------------------------------------%R%
 echo.
 
-:: Opening install.bat from inside a ZIP in Explorer extracts only the .bat itself. Step 6
-:: needs deps_rev.txt, so check for it now rather than after the downloads
+:: Opening install.bat from inside a ZIP in Explorer extracts only the .bat itself. Steps 5
+:: and 6 need constraints.txt and deps_rev.txt, so check for them now rather than after
+:: the downloads
 set "APP_OK=1"
 if not exist app\system_check.ps1 set "APP_OK="
+if not exist app\constraints.txt set "APP_OK="
 if not exist app\deps_rev.txt set "APP_OK="
 if not defined APP_OK (
     echo %RED%  ERROR: The app folder is missing or incomplete.%R%
@@ -180,18 +183,25 @@ call :ok
 
 :: ---------------------------------------------------------------------------
 call :step 4 6 "Installing pip"
-:: The versioned URL appears once pip drops Python 3.10; until then use the current one
+:: The versioned URL appears once pip drops Python 3.10; until then use the current one.
+:: Either one installs the pip given here, not the newest
 powershell -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://bootstrap.pypa.io/pip/3.10/get-pip.py' -OutFile 'get-pip.py' } catch { Invoke-WebRequest -UseBasicParsing -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile 'get-pip.py' }"
 if errorlevel 1 goto :error
-python\python.exe get-pip.py --no-warn-script-location
+python\python.exe get-pip.py --no-warn-script-location pip==26.2.1
 if errorlevel 1 goto :error
 del get-pip.py
 call :ok
 
 :: ---------------------------------------------------------------------------
-:: Bump app\deps_rev.txt whenever a pip line in this step changes, so existing installs
-:: are offered the update
+:: Bump app\deps_rev.txt whenever a pip line in this step or app\constraints.txt changes,
+:: so existing installs are offered the update. When a pin here changes, regenerate
+:: app\constraints.txt from a fresh install with the new pins (pip freeze, without the five
+:: packages installed from wheels below); otherwise pip stops with a conflict between the
+:: new pin and the old constraint
 :packages
+:: Every package installs at the version in app\constraints.txt, including the ones no
+:: line here names. The path is relative, as pip splits this variable at spaces
+set "PIP_CONSTRAINT=app\constraints.txt"
 call :step 5 6 "Installing packages"
 echo.
 if defined PYTTI_UPDATE (
@@ -220,7 +230,7 @@ echo %DIM%       [+] dependencies%R%
 :: Pinned to the versions this release was tested with, numpy again so this step can't
 :: move it. fastapi/pydantic: newer ones pull in starlette 1.x, which breaks gradio's
 :: main page
-python\python.exe -m pip install --no-warn-script-location numpy==1.23.5 ipython==8.39.0 scipy==1.15.3 requests==2.34.2 gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml==6.0.3 omegaconf==2.3.0 hydra-core==1.3.2 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.4.8 transformers==4.24.0 ftfy==6.1.1 regex==2026.9.29 tqdm==4.70.1 loguru==0.7.3 Pillow==9.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex==0.12.0 gdown==4.7.1 PyGLM==2.8.3 tensorboard==2.10.1
+python\python.exe -m pip install --no-warn-script-location numpy==1.23.5 ipython==8.39.0 scipy==1.15.3 requests==2.34.2 gradio==4.44.1 fastapi==0.112.4 pydantic==2.10.6 pyyaml==6.0.3 omegaconf==2.3.0 hydra-core==1.3.7 pytorch-lightning==2.0.1 kornia==0.6.11 einops==0.6.0 imageio-ffmpeg==0.6.0 transformers==4.24.0 ftfy==6.1.1 regex==2026.9.29 tqdm==4.70.1 loguru==0.7.3 Pillow==10.4.0 imageio==2.27.0 matplotlib==3.7.1 matplotlib-label-lines==0.5.1 pandas==1.5.3 seaborn==0.12.2 scikit-learn==1.2.2 adjustText==0.8 exrex==0.12.0 gdown==4.7.1 PyGLM==2.8.3 tensorboard==2.10.1
 if errorlevel 1 goto :error
 
 :: These five packages are not on PyPI. They install from wheels built at these commits and
