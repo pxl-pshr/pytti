@@ -107,6 +107,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 ## Troubleshooting
 
 - **Out of GPU memory**: lower the width and height, use fewer cutouts or CLIP models, or raise `gradient_accumulation_steps`.
+- **Renders are slow**: on a GPU with 24 GB or more, set `gradient_accumulation_steps` to 1. It is about 25% faster than 2, gives the same result, and needs about 17 GB with the default settings instead of about 9 GB. If a render is far slower than usual, check Task Manager > Performance > GPU: rising "Shared GPU memory" means the render no longer fits in the GPU's memory and Windows is using system RAM; use the out-of-memory fixes above.
 - **3D mode fails with `... to have 128 channels, but got N channels instead`**: the AdaBins depth model, which 3D mode and `depth_stabilization_weight` use, needs `(width * pixel_size) // 32` times `(height * pixel_size) // 32` to be at least 129. With `pixel_size` 1, 512×288 works and 512×256 doesn't. The UI checks this before it starts a render.
 - **The install stopped partway**: run `install.bat` again. It offers to resume, or to delete the `python` folder and start over.
 - **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models, which are stored outside the pytti folder (see [Disk space](#disk-space)).

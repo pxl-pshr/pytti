@@ -7,6 +7,9 @@ Video Source end of video, prompt mask positions, output and backup folders,
 VQGAN downloads, audio input), plus model_mirror.py, which fetches models from
 PyTTI Portable's mirror on Hugging Face, and AdaBins' torch.hub branch.
 
+Speed patches to pytti-core and kornia leave what a render computes unchanged and cut
+the time the CPU and GPU spend waiting for each other.
+
 Run by install.bat and on every launch.bat, so an install picks up new patches
 after `git pull`. Re-running is safe: patches already applied are skipped.
 
@@ -216,6 +219,71 @@ PYTTI_IMAGEGUIDE_PATCHES = [
         '                semantic_init_prompt=self.semantic_init_prompt,\n'
         '                init_image_pil=self.init_image_pil,\n'
         '            )',
+    ),
+    # Speed and memory with gradient_accumulation_steps above 1: each batch's CLIP losses are
+    # backpropagated into a detached copy of the decoded image, which frees that batch's
+    # graph; the decoded image and the stabilization, palette and smoothing losses are then
+    # backpropagated once per step instead of once per batch. The gradient is the same sum.
+    (
+        '        for mb_i in range(gradient_accumulation_steps):\n'
+        '            # logger.debug(mb_i)\n'
+        '            # logger.debug(self.image_rep.shape)\n'
+        '            t = 1\n'
+        '            interp_losses = [0]\n'
+        '            prompt_losses = {}\n'
+        '            if self.embedder is not None:\n'
+        '                image_embeds, offsets, sizes = self.embedder(self.image_rep, input=z)\n',
+        '        z_clip = z.detach().requires_grad_() if self.embedder is not None else None\n'
+        '        for mb_i in range(gradient_accumulation_steps):\n'
+        '            t = 1\n'
+        '            interp_losses = [0]\n'
+        '            prompt_losses = {}\n'
+        '            if self.embedder is not None:\n'
+        '                image_embeds, offsets, sizes = self.embedder(self.image_rep, input=z_clip)\n',
+    ),
+    (
+        '            total_loss_mb = sum(map(lambda x: sum(x.values()), losses)) + sum(\n'
+        '                interp_losses\n'
+        '            )\n'
+        '\n'
+        '            total_loss_mb /= gradient_accumulation_steps\n'
+        '\n'
+        '            # total_loss_mb.backward()\n'
+        '            total_loss_mb.backward(retain_graph=True)\n'
+        '            # total_loss += total_loss_mb # this is causing it to break\n'
+        '            # total_loss = total_loss_mb\n'
+        '\n'
+        '        # losses = [{k:v} for k,v in losses_accumulator.items()]\n'
+        '        # losses_raw = [{k:v} for k,v in losses_raw_accumulator.items()]\n'
+        '        losses_raw.append({"TOTAL": total_loss})  # this needs to be fixed\n',
+        '            clip_loss_mb = (sum(losses[0].values()) + sum(interp_losses)) / gradient_accumulation_steps\n'
+        '            if torch.is_tensor(clip_loss_mb) and clip_loss_mb.requires_grad:\n'
+        '                clip_loss_mb.backward()\n'
+        '\n'
+        '        image_loss = sum(losses[1].values()) + sum(losses[2].values())\n'
+        '        tensors, grads = [], []\n'
+        '        if z_clip is not None and z_clip.grad is not None:\n'
+        '            tensors.append(z)\n'
+        '            grads.append(z_clip.grad)\n'
+        '        if torch.is_tensor(image_loss) and image_loss.requires_grad:\n'
+        '            tensors.append(image_loss)\n'
+        '            grads.append(torch.ones_like(image_loss))\n'
+        '        if tensors:\n'
+        '            torch.autograd.backward(tensors, grads)\n'
+        '\n'
+        '        losses_raw.append({"TOTAL": total_loss})  # this needs to be fixed\n',
+    ),
+    # Speed: only show_graphs and tensorboard read the per-step loss table, and filling it
+    # reads every loss back from the GPU, so the CPU waited for each step to finish
+    (
+        '        if save_loss:\n'
+        '            if not self.dataframe:\n',
+        '        if save_loss and (\n'
+        '            self.params is None\n'
+        '            or getattr(self.params, "show_graphs", False)\n'
+        '            or getattr(self.params, "use_tensorboard", False)\n'
+        '        ):\n'
+        '            if not self.dataframe:\n',
     ),
 ]
 
@@ -453,6 +521,26 @@ PYTTI_PROMPT_PATCHES = [
         '    return lambda pos, size, emb: mask_fun(size, pos, emb, parametric_eval(thresh))',
         '    return lambda pos, size, emb: mask_fun(pos, size, emb, parametric_eval(thresh))',
     ),
+    # Speed: the prompt weights and stops go to the GPU with non-blocking copies. A blocking
+    # copy makes the CPU wait for all queued GPU work, several times per prompt per step.
+    (
+        '        if not self.enabled or self.weight in ["0", 0]:\n'
+        '            return torch.as_tensor(offset, device=device), offset\n'
+        '        dists_raw = spherical_dist_loss(embed, self.embeds) + offset\n'
+        '        weight = torch.as_tensor(parametric_eval(self.weight), device=device)\n'
+        '        stop = torch.as_tensor(parametric_eval(self.stop), device=device)\n'
+        '\n'
+        '        mask_stops, mask_weights = self.mask(position, size, embed.detach())\n'
+        '        weight = torch.as_tensor(mask_weights, device=device) * weight\n',
+        '        if not self.enabled or self.weight in ["0", 0]:\n'
+        '            return torch.as_tensor(offset).to(device, non_blocking=True), offset\n'
+        '        dists_raw = spherical_dist_loss(embed, self.embeds) + offset\n'
+        '        weight = torch.as_tensor(parametric_eval(self.weight)).to(device, non_blocking=True)\n'
+        '        stop = torch.as_tensor(parametric_eval(self.stop)).to(device, non_blocking=True)\n'
+        '\n'
+        '        mask_stops, mask_weights = self.mask(position, size, embed.detach())\n'
+        '        weight = torch.as_tensor(mask_weights).to(device, non_blocking=True) * weight\n',
+    ),
 ]
 
 # ── pytti-core patches: AudioParse.py ─────────────────────────────────────────
@@ -636,6 +724,274 @@ ADABINS_UNET_PATCHES = [
     ),
 ]
 
+# ── Speed patches: pytti-core ───────────────────────────────────────────────
+# None of these change what a render computes: the same values (or, for the palette
+# gradient, the same sums in a different order), with fewer waits between CPU and GPU.
+
+PYTTI_PIXEL = SITE_PACKAGES / "pytti" / "image_models" / "pixel.py"
+
+PYTTI_PIXEL_PATCHES = [
+    # Limited Palette looks up each pixel's colors with pallet[index]. That indexing's
+    # backward (index_put with accumulate) adds the ~10^5 pixels sharing each palette row one
+    # after another, and took most of a render step's GPU time. PalletGather keeps the
+    # forward and sums the gradient per row with a one-hot matmul.
+    (
+        '    return floors, ceils, rounds, fracs\n'
+        '\n'
+        '\n'
+        'class PalletLoss(nn.Module):\n',
+        '    return floors, ceils, rounds, fracs\n'
+        '\n'
+        '\n'
+        'class PalletGather(torch.autograd.Function):\n'
+        '    """pallet[index], with the gradient summed per palette row by a one-hot matmul."""\n'
+        '\n'
+        '    @staticmethod\n'
+        '    def forward(ctx, pallet, index):\n'
+        '        ctx.save_for_backward(index)\n'
+        '        ctx.pallet_shape = pallet.shape\n'
+        '        return pallet[index]\n'
+        '\n'
+        '    @staticmethod\n'
+        '    def backward(ctx, grad):\n'
+        '        (index,) = ctx.saved_tensors\n'
+        '        onehot = F.one_hot(index.reshape(-1), ctx.pallet_shape[0]).to(grad.dtype)\n'
+        '        grad_pallet = onehot.t() @ grad.reshape(onehot.shape[0], -1)\n'
+        '        return grad_pallet.view(ctx.pallet_shape), None\n'
+        '\n'
+        '\n'
+        'class PalletLoss(nn.Module):\n',
+    ),
+    (
+        '        colors_disc = pallet[value_rounds]\n',
+        '        colors_disc = PalletGather.apply(pallet, value_rounds)\n',
+    ),
+    (
+        '            mode="nearest",\n'
+        '        )\n'
+        '\n'
+        '        colors_cont = (\n'
+        '            pallet[value_floors] * (1 - value_fracs) + pallet[value_ceils] * value_fracs\n'
+        '        )\n',
+        '            mode="nearest",\n'
+        '        )\n'
+        '\n'
+        '        colors_cont = (\n'
+        '            PalletGather.apply(pallet, value_floors) * (1 - value_fracs)\n'
+        '            + PalletGather.apply(pallet, value_ceils) * value_fracs\n'
+        '        )\n',
+    ),
+    # Sorting each palette by brightness: one gather instead of an indexing op per palette
+    (
+        '        pallet_indices = color_norms.argsort(dim=0).T\n'
+        '        pallet = torch.stack(\n'
+        '            [pallet[i][:, j] for j, i in enumerate(pallet_indices)], dim=1\n'
+        '        )\n'
+        '        return pallet\n',
+        '        order = color_norms.argsort(dim=0)\n'
+        '        return torch.gather(pallet, 0, order.unsqueeze(-1).expand(-1, -1, pallet.shape[-1]))\n',
+    ),
+]
+
+PYTTI_SAMPLERS = SITE_PACKAGES / "pytti" / "Perceptor" / "cutouts" / "samplers.py"
+
+PYTTI_SAMPLERS_PATCHES = [
+    # Each cutout's offset and size went to the GPU as two blocking copies, each making the
+    # CPU wait for all queued GPU work; now one non-blocking copy each per call. The random
+    # draws and the values are unchanged.
+    (
+        '        offsets.append(\n'
+        '            torch.as_tensor([[offsetx / side_x, offsety / side_y]]).to(device)\n'
+        '        )\n'
+        '        sizes.append(torch.as_tensor([[size / side_x, size / side_y]]).to(device))\n'
+        '    cutouts = augs(torch.cat(cutouts))\n'
+        '    offsets = torch.cat(offsets)\n'
+        '    sizes = torch.cat(sizes)\n',
+        '        offsets.append([offsetx / side_x, offsety / side_y])\n'
+        '        sizes.append([size / side_x, size / side_y])\n'
+        '    cutouts = augs(torch.cat(cutouts))\n'
+        '    offsets = torch.as_tensor(offsets).to(device, non_blocking=True)\n'
+        '    sizes = torch.as_tensor(sizes).to(device, non_blocking=True)\n',
+    ),
+]
+
+PYTTI_EMBEDDER = SITE_PACKAGES / "pytti" / "Perceptor" / "Embedder.py"
+
+PYTTI_EMBEDDER_PATCHES = [
+    # CUDA graphs of the CLIP image encoders: each replays an encoder's forward and backward
+    # kernels with one launch instead of thousands. Only on GPUs with 20 GB or more, since a
+    # graph keeps its own memory; a shape whose capture fails runs as before.
+    (
+        '}\n'
+        '\n'
+        '\n'
+        'class HDMultiClipEmbedder(nn.Module):\n',
+        '}\n'
+        '\n'
+        '# (perceptor, input shape, strides, dtype) -> graphed CLIP image encoder, or None\n'
+        '_CLIP_GRAPHS = {}\n'
+        '\n'
+        '\n'
+        'def _encode_image(perceptor, clip_in):\n'
+        '    from clip.model import CLIP\n'
+        '\n'
+        '    if (\n'
+        '        not isinstance(perceptor, CLIP)\n'
+        '        or not clip_in.is_cuda\n'
+        '        or not clip_in.requires_grad\n'
+        '        or not torch.is_grad_enabled()\n'
+        '        or torch.cuda.get_device_properties(clip_in.device).total_memory < 20 * 2**30\n'
+        '    ):\n'
+        '        return perceptor.encode_image(clip_in)\n'
+        '    x = clip_in.type(perceptor.dtype)\n'
+        '    key = (id(perceptor), tuple(x.shape), x.stride(), x.dtype)\n'
+        '    if key not in _CLIP_GRAPHS:\n'
+        '        visual = perceptor.visual\n'
+        '        try:\n'
+        '            # the random sample used for capture leaves the render\'s random draws as they were\n'
+        '            with torch.random.fork_rng(devices=[x.device]):\n'
+        '                sample = torch.empty_like(x).normal_().requires_grad_(True)\n'
+        '                _CLIP_GRAPHS[key] = torch.cuda.make_graphed_callables(lambda t: visual(t), (sample,))\n'
+        '        except Exception as e:\n'
+        '            from loguru import logger\n'
+        '\n'
+        '            logger.warning(f"CLIP runs without CUDA graphs: {e}")\n'
+        '            _CLIP_GRAPHS[key] = None\n'
+        '    graphed = _CLIP_GRAPHS[key]\n'
+        '    return graphed(x) if graphed is not None else perceptor.encode_image(clip_in)\n'
+        '\n'
+        '\n'
+        'class HDMultiClipEmbedder(nn.Module):\n',
+    ),
+    (
+        '            image_embeds.append(perceptor.encode_image(clip_in).float().unsqueeze(0))\n',
+        '            image_embeds.append(_encode_image(perceptor, clip_in).float().unsqueeze(0))\n',
+    ),
+]
+
+PYTTI_BASELOSS = SITE_PACKAGES / "pytti" / "LossAug" / "BaseLossClass.py"
+
+PYTTI_BASELOSS_PATCHES = [
+    # The stabilization losses' weights and stops go to the GPU with non-blocking copies
+    (
+        '        weight = torch.as_tensor(parametric_eval(self.weight), device=device)\n'
+        '        stop = torch.as_tensor(parametric_eval(self.stop), device=device)\n',
+        '        weight = torch.as_tensor(parametric_eval(self.weight)).to(device, non_blocking=True)\n'
+        '        stop = torch.as_tensor(parametric_eval(self.stop)).to(device, non_blocking=True)\n',
+    ),
+]
+
+PYTTI_DEPTHLOSS = SITE_PACKAGES / "pytti" / "LossAug" / "DepthLossClass.py"
+
+PYTTI_DEPTHLOSS_PATCHES = [
+    # Emptying PyTorch's GPU memory cache around the depth model made the following steps
+    # allocate that memory again; it is only kept on GPUs under 12 GB
+    (
+        '        gc.collect()\n'
+        '        torch.cuda.empty_cache()\n'
+        '        _, depth_map = infer_helper.predict_pil(depth_input)\n'
+        '        gc.collect()\n'
+        '        torch.cuda.empty_cache()\n',
+        '        low_vram = torch.cuda.is_available() and (\n'
+        '            torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory < 12 * 2**30\n'
+        '        )\n'
+        '        if low_vram:\n'
+        '            gc.collect()\n'
+        '            torch.cuda.empty_cache()\n'
+        '        _, depth_map = infer_helper.predict_pil(depth_input)\n'
+        '        if low_vram:\n'
+        '            gc.collect()\n'
+        '            torch.cuda.empty_cache()\n',
+    ),
+]
+
+# ── Speed patches: kornia ───────────────────────────────────────────────────
+# kornia picks the cutouts an augmentation applies to with a bool mask on the CPU and
+# indexes the GPU batch with it: a blocking copy in the forward pass and a sync in the
+# backward pass, each making the CPU wait for all queued GPU work. The same positions as a
+# GPU index tensor (one non-blocking copy) select the same items in the same order.
+
+KORNIA_AUG_BASE = SITE_PACKAGES / "kornia" / "augmentation" / "base.py"
+
+KORNIA_AUG_BASE_PATCHES = [
+    (
+        '        else:  # If any tensor needs to be transformed.\n'
+        '            output = self.apply_non_transform(in_tensor, params, flags, transform=transform)\n'
+        '            applied = self.apply_transform(\n'
+        '                in_tensor[to_apply], params, flags, transform=transform if transform is None else transform[to_apply]\n'
+        '            )\n'
+        '\n'
+        '            if is_autocast_enabled():\n'
+        '                output = output.type(input.dtype)\n'
+        '                applied = applied.type(input.dtype)\n'
+        '            output = output.index_put((to_apply,), applied)\n',
+        '        else:  # If any tensor needs to be transformed.\n'
+        '            # PyTTI Portable: a GPU index tensor instead of the CPU bool mask\n'
+        '            if not to_apply.is_cuda:\n'
+        '                to_apply = to_apply.nonzero(as_tuple=True)[0].to(in_tensor.device, non_blocking=True)\n'
+        '            output = self.apply_non_transform(in_tensor, params, flags, transform=transform)\n'
+        '            applied = self.apply_transform(\n'
+        '                in_tensor[to_apply], params, flags, transform=transform if transform is None else transform[to_apply]\n'
+        '            )\n'
+        '\n'
+        '            if is_autocast_enabled():\n'
+        '                output = output.type(input.dtype)\n'
+        '                applied = applied.type(input.dtype)\n'
+        '            output = output.index_put((to_apply,), applied)\n',
+    ),
+]
+
+KORNIA_ERASING = SITE_PACKAGES / "kornia" / "augmentation" / "_2d" / "intensity" / "erasing.py"
+
+KORNIA_ERASING_PATCHES = [
+    # RandomErasing drew each cutout's box into a CPU mask in a Python loop and uploaded it,
+    # plus a full-size tensor of fill values. The same boxes (bbox_to_mask's (boxes + 1).long()
+    # on its 1-pixel padded grid) are drawn on the GPU with comparisons.
+    (
+        '        _, c, h, w = input.size()\n'
+        '        values = params["values"].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, *input.shape[1:]).to(input)\n'
+        '\n'
+        '        bboxes = bbox_generator(params["xs"], params["ys"], params["widths"], params["heights"])\n'
+        '        mask = bbox_to_mask(bboxes, w, h)  # Returns B, H, W\n'
+        '        mask = mask.unsqueeze(1).repeat(1, c, 1, 1).to(input)  # Transform to B, c, H, W\n'
+        '        transformed = where(mask == 1.0, values, input)\n'
+        '        return transformed\n',
+        '        # PyTTI Portable: the boxes bbox_to_mask would draw, drawn on the GPU\n'
+        '        import torch\n'
+        '        from kornia.geometry.bbox import validate_bbox\n'
+        '\n'
+        '        _, c, h, w = input.size()\n'
+        '        values = params["values"].to(input.device, input.dtype, non_blocking=True)\n'
+        '        bboxes = bbox_generator(params["xs"], params["ys"], params["widths"], params["heights"])\n'
+        '        validate_bbox(bboxes)\n'
+        '        box_i = (bboxes + 1).long()\n'
+        '        bounds = torch.stack([box_i[:, 0, 1], box_i[:, 2, 1], box_i[:, 0, 0], box_i[:, 1, 0]], dim=1)\n'
+        '        bounds = bounds.to(input.device, non_blocking=True)\n'
+        '        rows = torch.arange(1, h + 1, device=input.device)\n'
+        '        cols = torch.arange(1, w + 1, device=input.device)\n'
+        '        in_rows = (rows >= bounds[:, 0:1]) & (rows <= bounds[:, 1:2])\n'
+        '        in_cols = (cols >= bounds[:, 2:3]) & (cols <= bounds[:, 3:4])\n'
+        '        mask = in_rows[:, None, :, None] & in_cols[:, None, None, :]\n'
+        '        return where(mask, values[:, None, None, None], input)\n',
+    ),
+]
+
+KORNIA_AUG_2D_BASE = SITE_PACKAGES / "kornia" / "augmentation" / "_2d" / "base.py"
+
+KORNIA_AUG_2D_BASE_PATCHES = [
+    (
+        '        else:\n'
+        '            trans_matrix_A = self.identity_matrix(in_tensor)\n'
+        '            trans_matrix_B = self.compute_transformation(in_tensor[to_apply], params=params, flags=flags)\n',
+        '        else:\n'
+        '            # PyTTI Portable: a GPU index tensor instead of the CPU bool mask\n'
+        '            if not to_apply.is_cuda:\n'
+        '                to_apply = to_apply.nonzero(as_tuple=True)[0].to(in_tensor.device, non_blocking=True)\n'
+        '            trans_matrix_A = self.identity_matrix(in_tensor)\n'
+        '            trans_matrix_B = self.compute_transformation(in_tensor[to_apply], params=params, flags=flags)\n',
+    ),
+]
+
 # ── Files added to pytti-core ───────────────────────────────────────────────
 
 # (source next to this script, destination in pytti-core, label); copied whenever the
@@ -660,6 +1016,19 @@ TARGETS = [
     (PYTTI_AUDIOPARSE, PYTTI_AUDIOPARSE_PATCHES, "AudioParse.py"),
     (PYTTI_VQGAN, PYTTI_VQGAN_PATCHES, "vqgan.py"),
     (ADABINS_UNET, ADABINS_UNET_PATCHES, "unet_adaptive_bins.py"),
+    (PYTTI_PIXEL, PYTTI_PIXEL_PATCHES, "pixel.py"),
+    (PYTTI_SAMPLERS, PYTTI_SAMPLERS_PATCHES, "samplers.py"),
+    (PYTTI_EMBEDDER, PYTTI_EMBEDDER_PATCHES, "Embedder.py"),
+    (PYTTI_BASELOSS, PYTTI_BASELOSS_PATCHES, "BaseLossClass.py"),
+    (PYTTI_DEPTHLOSS, PYTTI_DEPTHLOSS_PATCHES, "DepthLossClass.py"),
+]
+
+# Speed-only patches outside pytti-core: a file that doesn't match is left as it is,
+# without holding up the other patches
+OPTIONAL_TARGETS = [
+    (KORNIA_AUG_BASE, KORNIA_AUG_BASE_PATCHES, "kornia augmentation/base.py"),
+    (KORNIA_AUG_2D_BASE, KORNIA_AUG_2D_BASE_PATCHES, "kornia augmentation/_2d/base.py"),
+    (KORNIA_ERASING, KORNIA_ERASING_PATCHES, "kornia augmentation/_2d/intensity/erasing.py"),
 ]
 
 # ── Apply patches ───────────────────────────────────────────────────────────
@@ -700,6 +1069,13 @@ def main():
             text, file_problems = plan_patches(target, patches, label)
             problems += file_problems
             if text is not None:
+                planned.append((target, text, label))
+        for target, patches, label in OPTIONAL_TARGETS:
+            text, file_problems = plan_patches(target, patches, label)
+            if file_problems:
+                if not quiet:
+                    print(f"  Skipped the speed patch for {label}: it doesn't match the expected version.")
+            elif text is not None:
                 planned.append((target, text, label))
         for source, target, label in ADDED_FILES:
             if not source.exists():
