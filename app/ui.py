@@ -6,8 +6,12 @@ Run via launch.bat — do not run directly with system Python.
 __version__ = "1.1.0-beta"  # install.bat and launch.bat read this line for their banners
 import atexit
 import contextlib
+import ctypes
+import difflib
 import html
 import inspect
+import io
+import math
 import os
 import random
 import re
@@ -20,7 +24,12 @@ import threading
 import time
 from pathlib import Path
 
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# Must be set before gradio is imported: no usage telemetry, no version check and no
+# message fetch at import time (gr.Blocks(analytics_enabled=False) misses that one)
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
+# Colors and cursor moves (tqdm moves up and down between nested bars)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 # ---------------------------------------------------------------------------
 # Monkey-patch gradio_client bug BEFORE importing gradio.
@@ -55,7 +64,7 @@ TIPS = {
     "scenes": "Text prompts the render optimizes toward. Prompts separated by | are combined within a scene; use || to start a new scene.",
     "scene_prefix": "Prepended to every scene prompt. Useful for style keywords shared across all scenes.",
     "scene_suffix": "Appended to every scene prompt. Useful for negative or quality terms applied globally.",
-    "direct_image_prompts": "Path or URL to an image used as a visual prompt (pixel-level guidance).",
+    "direct_image_prompts": "Path or URL of an image the render is pulled toward pixel by pixel (no CLIP). Add :weight, and _maskpath for a mask.",
     "init_image": "Starting image for the render. Blank = start from noise.",
     "direct_init_weight": "How strongly the init image guides pixel appearance at the start.",
     "semantic_init_weight": "How strongly the init image guides semantic/CLIP content at the start.",
@@ -63,7 +72,7 @@ TIPS = {
     "vqgan_model": "Which VQGAN codebook to use when image_model is VQGAN. Only affects VQGAN mode.",
     "animation_mode": "off: single image. 2D/3D: camera moves each frame. Video Source: warp to a reference video.",
     "video_path": "Source video for Video Source animation mode.",
-    "frame_stride": "How many source video frames to skip between animation frames.",
+    "frame_stride": "Source video frames to advance per animation frame. 1 = every frame.",
     "width": "Output image width in pixels.",
     "height": "Output image height in pixels.",
     "translate_x": "Horizontal camera movement per frame. Supports Python expressions with t (time in seconds).",
@@ -73,20 +82,20 @@ TIPS = {
     "rotate_3d": "Quaternion [w, x, y, z] rotation per frame (3D mode). Supports Python expressions with t (time in seconds).",
     "zoom_x_2d": "Horizontal zoom per frame (2D mode). Supports Python expressions with t (time in seconds).",
     "zoom_y_2d": "Vertical zoom per frame (2D mode). Supports Python expressions with t (time in seconds).",
-    "lock_camera": "Freeze camera during pre-animation steps so the image develops before motion begins.",
-    "field_of_view": "Camera field of view in degrees (3D mode). Lower = telephoto, higher = wide-angle.",
-    "near_plane": "Near clipping plane distance (3D mode).",
-    "far_plane": "Far clipping plane distance (3D mode).",
-    "border_mode": "How edges are handled when the image is warped. wrap = tile, smear = stretch edge pixels.",
+    "lock_camera": "3D only: cancels the average movement every frame, so Translate X/Y and turning leave only parallax. Turn off to pan or turn; rolls and Translate Z are not affected.",
+    "field_of_view": "Camera field of view in degrees (3D mode), between 0 and 180. Lower = telephoto, higher = wide-angle.",
+    "near_plane": "3D only: the depth model's 0-10 m range is spread from Near Plane to Far Plane, in pixels. Higher values push the scene farther away and weaken all movement; nothing is clipped.",
+    "far_plane": "3D only: where the depth model's 10 m lands, in pixels (see Near Plane). Higher values push distant scenery farther away; nothing is clipped.",
+    "border_mode": "How CLIP cutouts treat the area past the image edge (camera moves use Infill Mode). clamp keeps cutouts inside the image, wrap tiles, mirror reflects, black pads with black, smear repeats edge pixels.",
     "sampling_mode": "Interpolation quality when warping. bicubic is sharpest.",
     "infill_mode": "How to fill areas revealed by camera movement.",
     "steps_per_scene": "Total optimization steps for the whole scene. More = longer render, more developed image.",
     "steps_per_frame": "Optimization steps before advancing to the next animation frame.",
     "interpolation_steps": "Steps used to blend between scenes during a transition.",
-    "pre_animation_steps": "Steps run before animation starts, with camera locked. Lets the image develop first.",
+    "pre_animation_steps": "Steps run before any camera movement starts. Lets the image develop first.",
     "cutouts": "Number of random crops used per CLIP evaluation. More = richer gradients, slower.",
     "cut_pow": "Controls cutout size distribution. Higher = more small crops (fine detail).",
-    "learning_rate": "Optimizer step size. Leave blank for auto. Lower = more stable but slower.",
+    "learning_rate": "Optimizer step size. Leave blank for auto (0.02 for the palette models, about 0.1 for VQGAN). Lower = more stable but slower.",
     "seed": "Random seed for reproducibility. Leave blank for a new random seed each run; the seed used is shown in the log.",
     "gradient_accumulation_steps": "Split each step's cutouts into N smaller batches. Higher = less VRAM but slower. Must divide Cutouts evenly.",
     "palette_size": "Number of colors per palette swatch (Limited Palette mode).",
@@ -94,7 +103,7 @@ TIPS = {
     "gamma": "Gamma correction applied to the palette (Limited Palette mode).",
     "hdr_weight": "Weight for HDR-like contrast enhancement (Limited Palette mode).",
     "palette_normalization_weight": "Keeps palette colors spread across the value range.",
-    "random_initial_palette": "Start with a random palette instead of deriving it from the init image.",
+    "random_initial_palette": "Start the palette from random colors instead of grayscale.",
     "lock_palette": "Prevent the palette from evolving during the render.",
     "target_palette": "Path to an image — palette colors will be pulled toward this image's colors.",
     "direct_stabilization_weight": "Resist pixel-level change between frames. Keeps the image stable.",
@@ -108,7 +117,7 @@ TIPS = {
     "frames_per_second": "Playback FPS when assembling the final video.",
     "save_every": "Save a frame every N steps. 0 = auto-match steps_per_frame (recommended). Set manually to override.",
     "breath_mode": "Gradually blend from init image to CLIP-optimized. Frame 1 = init image, last frame = fully optimized. Requires init image; best with little camera motion.",
-    "display_every": "Log losses every N optimization steps. The Latest Frame preview updates whenever a frame is saved.",
+    "display_every": "No visible effect in this UI: pytti reports losses only at debug level, which the log leaves out. The Latest Frame preview updates whenever a frame is saved.",
 }
 
 # ---------------------------------------------------------------------------
@@ -119,7 +128,7 @@ HELP_SECTIONS = [
         ("scenes", "Text prompts that describe what the image should look like. Separate prompts within a scene with <code>|</code> and weight them with <code>:weight</code> (e.g. <code>forest:2</code> for double weight). Use <code>||</code> to separate scenes — the render transitions between them using <code>interpolation_steps</code> via linear interpolation in CLIP semantic space. Negative weights push the image <em>away</em> from a concept (e.g. <code>blurry:-1</code>). You can also set a <code>:stop</code> value to freeze a prompt after a threshold is reached.", "string"),
         ("scene_prefix", "Text prepended to every scene prompt. Useful for global style keywords like <code>oil painting |</code> or <code>highly detailed |</code> that you want applied everywhere without repeating them in each scene.", "string"),
         ("scene_suffix", "Text appended to every scene prompt. Commonly used for negative prompts like <code>| text:-1 | watermark:-1</code> to suppress unwanted elements globally across all scenes.", "string"),
-        ("direct_image_prompts", "Path or URL to an image used as a direct (pixel-level) visual prompt. CLIP compares the render against this image literally — useful for style transfer. Local paths such as <code>C:\\images\\ref.png</code> work; relative paths are looked up from the pytti folder. Supports <code>weight_mask</code> syntax: e.g. <code>image.png:1.5_mask.png</code>. Video masks must be MP4.", "path"),
+        ("direct_image_prompts", "Path or URL of an image used as a pixel-level target: the render is pulled toward this picture by an HSV loss (a latent loss with VQGAN), without CLIP. Local paths such as <code>C:\\images\\ref.png</code> work; relative paths are looked up from the pytti folder. Separate several images with <code>|</code>. Supports <code>weight_mask</code> syntax with an absolute mask path, e.g. <code>C:\\images\\ref.png:1.5_C:\\masks\\mask.png</code>; a relative mask path is not found. Video masks must end in <code>.mp4</code>.", "path"),
         ("init_image", "Path to a starting image. The render begins from this instead of random noise, creating an initial focal point and layout. Leave blank for a random start. Tip: use with <code>semantic_init_weight</code> to keep the output resembling the init image throughout.", "path"),
         ("direct_init_weight", "Treats the init image as a direct image prompt with this weight (pixel-level MSE loss). Higher = stays closer to original pixels.", "weight"),
         ("semantic_init_weight", "Treats the init image as a semantic (CLIP-level) prompt with this weight. The render will <em>feel like</em> the init image without being pixel-locked to it. Mask paths go in <code>[ ]</code> brackets.", "weight"),
@@ -132,36 +141,36 @@ HELP_SECTIONS = [
         ("animation_mode", "<strong>off</strong>: single image, no animation. <strong>2D</strong>: pan/zoom/rotate the canvas each frame. <strong>3D</strong>: full 3D camera with AdaBins depth estimation. <strong>Video Source</strong>: warp frames of a source video using optical flow.", "choice"),
         ("translate_x", "Horizontal camera shift per frame (pixels). Accepts Python expressions using <code>t</code> (time in seconds, scaled by <code>frames_per_second</code>), e.g. <code>10*sin(t/30)</code>.", "expression"),
         ("translate_y", "Vertical camera shift per frame (pixels). Same expression support — <code>t</code> is time in seconds.", "expression"),
-        ("translate_z_3d", "Forward/backward camera movement per frame (3D mode only). Positive = move forward into the scene. Expressions with <code>t</code> supported.", "expression"),
-        ("rotate_3d", "Quaternion rotation per frame in 3D mode: <code>[w, x, y, z]</code>. Use <code>cos(radians(N))</code> and <code>sin(radians(N))</code> for smooth rotations. <code>t</code> is time in seconds.", "expression"),
+        ("translate_z_3d", "Forward/backward camera movement per frame (3D mode only). Positive = move forward into the scene. Expressions with <code>t</code> supported. In 3D mode, motion expressions can also use the depth of the current frame in pixels: <code>r</code> (nearest point), <code>R</code> (farthest point) and <code>mu</code> (typical depth).", "expression"),
+        ("rotate_3d", "Quaternion rotation per frame in 3D mode: <code>[w, x, y, z]</code>. Use <code>cos(radians(N))</code> and <code>sin(radians(N))</code> for smooth rotations. <code>t</code> is time in seconds; <code>r</code>, <code>R</code> and <code>mu</code> (see <code>translate_z_3d</code>) work here too.", "expression"),
         ("rotate_2d", "Rotation in degrees per frame (2D mode). Expressions with <code>t</code> (time in seconds) supported.", "expression"),
         ("zoom_x_2d", "Horizontal zoom per frame (2D mode). <code>0</code> = no zoom. Expressions with <code>t</code> supported.", "expression"),
         ("zoom_y_2d", "Vertical zoom per frame (2D mode). <code>0</code> = no zoom. Expressions with <code>t</code> supported.", "expression"),
-        ("lock_camera", "Prevents camera scrolling/drifting during <code>pre_animation_steps</code>. Stabilizes 3D rotations. The image develops before motion begins.", "bool"),
-        ("field_of_view", "Vertical FOV in degrees (3D mode). Lower values (30–40) give a telephoto look; higher (80–100) give wide-angle distortion.", "number"),
-        ("near_plane", "Near clipping plane distance in pixels (3D mode). Objects closer than this are clipped from the depth buffer.", "number"),
-        ("far_plane", "Far clipping plane distance in pixels (3D mode). Objects beyond this are clipped from the depth buffer.", "number"),
+        ("lock_camera", "3D mode only. Subtracts the average movement from every frame so the view doesn't drift. That cancels <code>translate_x</code>, <code>translate_y</code> and looking up, down, left or right, leaving only the parallax between near and far objects: turn it off to pan or turn. Rolls and <code>translate_z_3d</code> are not affected. It does nothing during <code>pre_animation_steps</code>, when the camera doesn't move yet.", "bool"),
+        ("field_of_view", "Vertical FOV in degrees (3D mode), more than 0 and less than 180. Lower values (30–40) give a telephoto look; higher (80–100) give wide-angle distortion.", "number"),
+        ("near_plane", "3D mode. The depth model measures 0 to 10 meters, and <code>near_plane</code> and <code>far_plane</code> spread that range over pixels: with the defaults (1 and 10000) something 1 meter away sits about 1000 pixels from the camera. 3D moves shrink with depth, so raising <code>near_plane</code> pushes everything farther away, which weakens all movement and flattens the parallax. Nothing is clipped.", "number"),
+        ("far_plane", "3D mode. Where the depth model's 10 meters lands, in pixels (see <code>near_plane</code>). Higher values push distant scenery farther away, so camera moves shift it less. Nothing is clipped.", "number"),
         ("video_path", "Path to an MP4 source video (Video Source mode). Each frame of this video guides one animation frame via optical flow.", "path"),
         ("frame_stride", "Video frames to advance per output frame. <code>1</code> = use every frame, <code>2</code> = every other. Only used in Video Source mode.", "number"),
     ]),
     ("Canvas & Edges", [
-        ("width", "Output width in pixels. Larger = more detail but slower and more VRAM. Set to <code>-1</code> to auto-derive from init image aspect ratio.", "number"),
-        ("height", "Output height in pixels. Same considerations as width. Set to <code>-1</code> to auto-derive from init image aspect ratio.", "number"),
-        ("border_mode", "How cutouts handle pixels beyond the image edge: <code>wrap</code> = tile, <code>mirror</code> = reflect, <code>clamp</code> = stretch edge, <code>black</code> = fill with black, <code>smear</code> = extend edge colors.", "choice"),
+        ("width", "Output width in pixels. Larger = more detail but slower and more VRAM. Set to <code>-1</code> to derive it from the init image's (or source video's) aspect ratio. 3D mode and depth stabilization need a frame of at least about 384x384: <code>width × pixel_size ÷ 32</code> times <code>height × pixel_size ÷ 32</code>, each rounded down, must be at least 129, so 512x288 works and 512x256 does not.", "number"),
+        ("height", "Output height in pixels. Same considerations as width, including the 3D minimum size. Set to <code>-1</code> to derive it from the init image's (or source video's) aspect ratio.", "number"),
+        ("border_mode", "How CLIP's cutouts treat the area past the image edge; camera moves use <code>infill_mode</code> instead. <code>clamp</code> keeps cutouts inside the image, <code>wrap</code> tiles the image, <code>mirror</code> reflects it, <code>black</code> pads with black and <code>smear</code> repeats the edge pixels.", "choice"),
         ("sampling_mode", "Pixel sampling during animation warping: <code>nearest</code> (sharp/pixelated), <code>bilinear</code> (smooth), <code>bicubic</code> (sharpest).", "choice"),
         ("infill_mode", "How to fill newly revealed areas after camera movement: <code>wrap</code>, <code>mirror</code>, <code>black</code>, or <code>smear</code>.", "choice"),
     ]),
     ("Steps & Timing", [
-        ("steps_per_scene", "Total optimization steps per scene. Frames generated = <code>steps_per_scene / steps_per_frame</code>. Must be at least <code>interpolation_steps</code>. More steps = more refined image and more frames.", "number"),
+        ("steps_per_scene", "Total optimization steps per scene. Frames generated = <code>steps_per_scene / steps_per_frame</code>. Keep it at least <code>interpolation_steps</code>, or the crossfade into the next scene never finishes. More steps = more refined image and more frames.", "number"),
         ("steps_per_frame", "Optimization steps between each animation frame. Lower = more frames (smoother video) but less refinement per frame.", "number"),
         ("interpolation_steps", "Steps for smooth crossfade between scenes (using <code>||</code> separator). Uses linear interpolation in CLIP semantic space. Set to <code>0</code> to cut between scenes instantly.", "number"),
-        ("pre_animation_steps", "Steps to run before animation begins, with camera locked. Lets the image develop from noise before motion starts.", "number"),
+        ("pre_animation_steps", "Steps to run before any camera movement begins. Lets the image develop from noise before motion starts.", "number"),
     ]),
     ("CLIP & Optimization", [
         ("cutouts", "Number of random crops (glimpses) per CLIP evaluation. More cutouts = richer gradients and better quality, but slower and less VRAM-efficient. 40–60 is typical.", "number"),
         ("cut_pow", "Controls cutout size distribution. Higher (2–3) = more small crops emphasizing fine detail but can be unstable. Lower = more large crops emphasizing global composition.", "number"),
-        ("cutout_border", "Fraction of each cutout devoted to border padding. Higher = more context around each crop, which can improve coherence but reduces the effective crop area. <code>0</code> = no padding.", "number"),
-        ("learning_rate", "Optimizer step size. Leave blank for auto-tuning. Lower (0.05–0.1) = more stable but slower. Higher (0.2–0.5) = faster but can overshoot.", "number"),
+        ("cutout_border", "Pads the whole image by this fraction of its size so cutouts can reach past the edges, into padding filled as <code>border_mode</code> says. <code>0</code> = cutouts stay inside the image. With <code>clamp</code> cutouts always stay inside, and the padding only places more of them at the edges.", "number"),
+        ("learning_rate", "Optimizer step size. Leave blank to use the image model's own rate: 0.02 for Limited and Unlimited Palette, about 0.1 for VQGAN. For the palette models try 0.01–0.04; higher values change the image faster but can overshoot. Must be more than 0.", "number"),
         ("reset_lr_each_frame", "Reset the optimizer at each animation frame boundary. Clears Adam momentum buffers so each frame optimizes fresh. Disable to carry optimizer state across frames — can reduce color shifts but may cause instability.", "bool"),
         ("smoothing_weight", "Total variation loss weight — penalizes sharp pixel-to-pixel differences. Higher = smoother, more painterly images. Lower = more detail and texture but potentially noisy.", "number"),
         ("seed", "Pseudorandom seed for reproducibility. A fixed seed increases determinism — same seed + same config = similar output. Leave blank for a new random seed each run; the seed each render used is printed at the top of its log, so you can enter it here to repeat that render.", "number"),
@@ -190,7 +199,7 @@ HELP_SECTIONS = [
     ("Stabilization", [
         ("direct_stabilization_weight", "Keeps the current frame as a direct (pixel-level) image prompt for the next frame. Higher = less flicker but more ghosting. <code>1</code> is a good default. Supports <code>weight_mask</code> syntax.", "weight"),
         ("semantic_stabilization_weight", "Keeps the current frame as a semantic (CLIP-level) prompt for the next frame. Prevents the <em>meaning</em> from drifting between frames. Supports masks.", "weight"),
-        ("depth_stabilization_weight", "Maintains depth model consistency between frames (3D mode). Prevents depth map flickering. <strong>Steep performance cost</strong> — use sparingly. Supports masks.", "weight"),
+        ("depth_stabilization_weight", "Keeps the depth map consistent between frames, using the depth model of 3D mode, so it needs the same minimum frame size (see <code>width</code>). Prevents depth map flickering. <strong>Steep performance cost</strong> — use sparingly. Supports masks.", "weight"),
         ("edge_stabilization_weight", "Preserves image contours/edges between frames. Reduces shimmer on hard edges. Low performance cost. Supports masks.", "weight"),
         ("flow_stabilization_weight", "Optical flow alignment — warps each frame to match previous motion. Prevents flickering in 3D and Video Source modes. High cost for 3D, slight cost for Video Source.", "weight"),
         ("flow_long_term_samples", "Number of past frames sampled for flow stabilization. The earliest sampled frame is <code>2^N</code> frames in the past. Higher = more temporal coherence but slower. In Video Source mode these frames are reloaded from backups, so <code>backups</code> must be at least <code>2^N + 1</code> (raised automatically).", "number"),
@@ -204,7 +213,7 @@ HELP_SECTIONS = [
         ("file_namespace", "Name for the frame files and their folder. Each render gets its own timestamped folder, <code>app/outputs/&lt;date&gt;/&lt;time&gt;/images_out/&lt;namespace&gt;/</code>, so earlier renders are never overwritten.", "string"),
         ("frames_per_second", "Playback FPS for the final video — also controls how <code>t</code> is scaled in motion expressions. 12–15 for dreamy, 24–30 for smooth.", "number"),
         ("save_every", "Save a PNG frame every N optimization steps. <strong>0 = auto-match steps_per_frame</strong> (recommended). Set a value manually to override. Keep <code>pre_animation_steps</code> a multiple of <code>steps_per_frame</code> so each frame is saved right before the camera moves, when it's most refined.", "number"),
-        ("display_every", "Log losses every N steps. The Latest Frame preview updates whenever a frame is saved (see <code>save_every</code>).", "number"),
+        ("display_every", "Has no visible effect in this UI: pytti reports losses only at debug level, which the live log leaves out. The Latest Frame preview updates whenever a frame is saved (see <code>save_every</code>).", "number"),
         ("backups", "Number of rolling <code>.bak</code> backup files to keep per run. These store image model weights. <code>0</code> = no backups. Video Source mode reloads earlier frames from these for optical flow and needs at least <code>2^flow_long_term_samples + 1</code>; lower values are raised automatically.", "number"),
         ("breath_mode", "When enabled, saved frames linearly crossfade from the <code>init_image</code> to the CLIP-optimized output. Frame 1 is nearly 100% the init image; the final frame is 100% optimized. Requires <code>init_image</code> to be set. Works with all animation modes, but looks best with little or no camera motion: the init image stays still while the camera moves.", "bool"),
     ]),
@@ -298,10 +307,29 @@ PYTHON_EXE = EMBEDDED_PYTHON if EMBEDDED_PYTHON.exists() else Path(sys.executabl
 VQGAN_MODELS = ["imagenet", "coco", "wikiart", "sflckr", "openimages"]
 # Presets saved by older versions of this UI may use these names
 _LEGACY_VQGAN_NAMES = {"sflickr": "sflckr"}
+IMAGE_MODELS = ["Limited Palette", "Unlimited Palette", "VQGAN"]
+ANIMATION_MODES = ["off", "Video Source", "2D", "3D"]
+BORDER_MODES = ["clamp", "mirror", "wrap", "black", "smear"]
+SAMPLING_MODES = ["nearest", "bilinear", "bicubic"]
+INFILL_MODES = ["mirror", "wrap", "black", "smear"]
+# Settings pytti accepts only from a fixed list; a typo in a hand-written preset fails the render
+CHOICES = {
+    "image_model": IMAGE_MODELS,
+    "vqgan_model": VQGAN_MODELS,
+    "animation_mode": ANIMATION_MODES,
+    "border_mode": BORDER_MODES,
+    "sampling_mode": SAMPLING_MODES,
+    "infill_mode": INFILL_MODES,
+}
+CLIP_MODELS = ("ViTB32", "ViTB16", "ViTL14", "ViTL14_336px", "RN50", "RN101", "RN50x4", "RN50x16", "RN50x64")
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
+class PresetError(Exception):
+    """A preset that can't be read, worded for the status box."""
+
 
 def load_yaml(path: Path) -> dict:
     with open(path, encoding="utf-8") as f:
@@ -312,7 +340,8 @@ def save_yaml(path: Path, data: dict, header: str = ""):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(header)
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        # Keep the caller's key order: the UI's field order reads better than alphabetical
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 def get_conf_files():
@@ -324,19 +353,50 @@ def load_defaults() -> dict:
     return load_yaml(DEFAULT_YAML)
 
 
+def _yaml_problem(error: yaml.YAMLError) -> str:
+    """A YAML error as one line: what is wrong and where."""
+    mark = getattr(error, "problem_mark", None)
+    problem = getattr(error, "problem", None) or (str(error).strip().splitlines() or ["not valid YAML"])[0]
+    return f"{problem} (line {mark.line + 1}, column {mark.column + 1})" if mark else problem
+
+
 def load_conf(name: str) -> dict:
+    """conf/<name> as a dict, {} if it doesn't exist; PresetError if it can't be read."""
     path = CONF_DIR / name
-    if path.exists():
-        return load_yaml(path)
-    return {}
+    if not path.exists():
+        return {}
+    try:
+        data = load_yaml(path)
+    except yaml.YAMLError as e:
+        reason = _yaml_problem(e)
+    except UnicodeDecodeError:
+        reason = "it isn't saved as UTF-8 text"
+    except OSError as e:
+        reason = e.strerror or str(e)
+    else:
+        if isinstance(data, dict):
+            return data
+        reason = "it should hold one setting per line, as name: value"
+    raise PresetError(f"Could not read config/conf/{name}: {reason}.")
 
 
-def merged_config(conf_name: str) -> dict:
-    cfg = load_defaults()
-    if conf_name:
-        override = load_conf(conf_name)
-        cfg.update(override)
-    return cfg
+def _conf_mtime(name: str) -> int | None:
+    """mtime_ns of conf/<name>; None if it doesn't exist."""
+    try:
+        return (CONF_DIR / name).stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _changed_on_disk(name: str, stamp) -> int | None:
+    """conf/<name>'s new mtime_ns if it changed since this page loaded or saved it, else None.
+
+    stamp is (file name, mtime_ns as loaded or saved, mtime_ns the user was warned about).
+    """
+    if not stamp or stamp[0] != name:
+        return None
+    mtime = _conf_mtime(name)
+    return mtime if mtime not in (None, stamp[1]) else None
 
 
 # ---------------------------------------------------------------------------
@@ -356,14 +416,20 @@ _scene_prompt_count: int = 0     # how many "Running prompt:" lines we've seen
 _render_end_step: int | None = None  # Video Source: step where the source video runs out
 _render_conf: dict | None = None  # config snapshot for ETA calc
 _render_start: float = 0.0       # time.time() when render started
+_progress_start: tuple[float, int] | None = None  # (time, steps done) at the first progress line
+_render_status: str | None = None  # how the last render ended, for the Status box
 _stop_requested: bool = False
 _summary_appended: bool = False
 
 
-# DEBUG lines, warnings, and the text pytti's notebook display() prints outside a notebook
-_LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(|^<PIL\.Image\.Image image mode=")
-# Match tqdm output like "  5%|▌         | 500/10000 [00:33<10:30, 15.08it/s]"
-_TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*([\d.]+)(?:s/it|it/s)")
+# DEBUG lines and warnings
+_LOG_NOISE = re.compile(r"\| DEBUG\s+\||UserWarning:|warnings\.warn\(")
+# What pytti's notebook display() prints outside a notebook, often right after a progress bar
+_PIL_REPR = re.compile(r"<PIL\.Image\.Image [^>]*>")
+# Any tqdm bar ("  5%|▌    | ..."), including model download bars
+_BAR_RE = re.compile(r"\d+%\|")
+# The render's progress, e.g. "  5%|▌         | 500/10000 [00:33<10:30, 15.08it/s]"
+_TQDM_RE = re.compile(r"(\d+)/(\d+)\s+\[.*?,\s*(\d+(?:\.\d+)?)(s/it|it/s)")
 _SCENE_RE = re.compile(r"Running prompt:", re.IGNORECASE)
 # Logged by the patched workhorse.py when the source video is shorter than the render
 _VIDEO_END_RE = re.compile(r"render will end at step (\d+)")
@@ -372,18 +438,26 @@ def _render_progress() -> tuple[int, int]:
     """(total steps, steps done) of the current render, from its config and tqdm progress."""
     conf = _render_conf or {}
     num_scenes = max(1, len([s for s in str(conf.get("scenes", "")).split("||") if s.strip()]))
-    steps_per_scene = int(conf.get("steps_per_scene", 10000))
+    steps_per_scene = int(_num(conf.get("steps_per_scene"), 10000))
     total = num_scenes * steps_per_scene
     if _render_end_step is not None:
         total = min(total, _render_end_step)
     return total, _render_scene * steps_per_scene + _render_step
 
 
+def _pngs(folder: Path) -> list[Path]:
+    """PNG files in folder; [] if it can't be listed (missing, or a name Windows can't use)."""
+    try:
+        return list(folder.glob("*.png"))
+    except OSError:
+        return []
+
+
 def _render_frames() -> list[Path]:
     """Frames the current (or last) render has saved so far."""
     if _render_dir is None:
         return []
-    return list((_render_dir / "images_out" / _render_namespace).glob("*.png"))
+    return _pngs(_render_dir / "images_out" / _render_namespace)
 
 
 def _append_summary(label: str):
@@ -392,11 +466,10 @@ def _append_summary(label: str):
     if _summary_appended:
         return
     _summary_appended = True
-    elapsed = time.time() - _render_start if _render_start else 0
+    now = time.time()
+    elapsed = now - _render_start if _render_start else 0
     total_steps, done = _render_progress()
     frames = len(_render_frames())
-    avg_sps = done / elapsed if elapsed > 0 else 0
-    avg_spf = elapsed / frames if frames > 0 else 0
     lines = [
         "=" * 50,
         label,
@@ -405,13 +478,44 @@ def _append_summary(label: str):
         f"  Frames saved:  {frames}",
         f"  Total time:    {_format_eta(elapsed)}",
     ]
-    if avg_sps > 0:
-        lines.append(f"  Avg speed:     {avg_sps:.2f} step/s")
-    if frames > 0:
-        lines.append(f"  Avg per frame: {_format_eta(avg_spf)}")
+    if _progress_start:
+        # Timed from the first progress line, so model loading and downloads don't count
+        start_time, start_done = _progress_start
+        render_time = now - start_time
+        if render_time > 0 and done > start_done:
+            lines.append(f"  Avg speed:     {(done - start_done) / render_time:.2f} step/s")
+        if frames > 0:
+            lines.append(f"  Avg per frame: {_format_eta(render_time / frames)}")
     lines.append("=" * 50)
     with _log_lock:
         _log_lines.extend(lines)
+
+
+def _save_render_log():
+    """Keep the log in the render's folder: pytti logs through loguru, so Hydra's workhorse.log stays empty."""
+    if _render_dir is None or not _render_dir.is_dir():
+        return
+    with _log_lock:
+        text = "\n".join(_log_lines) + "\n"
+    with contextlib.suppress(OSError):
+        (_render_dir / "render.log").write_text(text, encoding="utf-8")
+
+
+_ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def _keep_awake(on: bool):
+    """Keep Windows from sleeping while a render runs; the display may still turn off.
+
+    A busy GPU doesn't count as activity, so the idle timer would suspend an unattended
+    render. The request belongs to the calling thread, so turn it off from the same one.
+    """
+    if os.name != "nt":
+        return
+    with contextlib.suppress(Exception):
+        set_state = ctypes.windll.kernel32.SetThreadExecutionState
+        set_state.argtypes, set_state.restype = [ctypes.c_uint32], ctypes.c_uint32
+        set_state(_ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0))
 
 
 def _kill_tree(proc: subprocess.Popen):
@@ -433,53 +537,74 @@ def _kill_tree(proc: subprocess.Popen):
 
 
 def _stream_output(proc):
-    global _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_end_step
-    last_progress_idx = -1  # index in _log_lines of the latest tqdm line, if nothing was logged after it
+    global _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_end_step, _progress_start, _render_status
+    _keep_awake(True)
+    last_idx = -1      # index in _log_lines of the latest progress line, if nothing was logged after it
+    redrawn = False    # that line ended in a bare \r, so whatever comes next replaces it
     try:
-        for line in iter(proc.stdout.readline, ""):
-            if proc is not _proc:
-                continue  # output from a stopped render; don't mix it into the current log
-            # Text mode already splits tqdm's \r redraws into separate lines
-            clean = _ANSI_ESCAPE.sub("", line.rstrip())
+        # newline="" keeps line ends as they are, so a bare \r (progress redrawn in place by
+        # tqdm, ffmpeg and download bars) can be told apart from the end of a line
+        stream = io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="replace", newline="")
+        for line in iter(stream.readline, ""):
+            if proc is not _proc or _stop_requested:
+                continue  # output after Stop, or from a stopped render; keep it out of the log
+            # A bare \r, or the cursor-up a bar nested in another (a download during the
+            # render) ends with: either way the next output is drawn over this line
+            redraw = line.endswith("\r") or "\x1b[A" in line
+            clean = _ANSI_ESCAPE.sub("", line).rstrip()
+            # display() output glued to a bar ends that line early; the bar is redrawn after it
+            clean, displayed = _PIL_REPR.subn("", clean)
             if not clean.strip() or _LOG_NOISE.search(clean):
                 continue
+            bar = bool(_BAR_RE.search(clean))
             # Extract tqdm progress; bars before the first scene are model downloads
             m = _TQDM_RE.search(clean)
-            if m and _scene_prompt_count:
+            if m and _scene_prompt_count and float(m.group(3)) > 0:
                 _render_step = int(m.group(1))
                 rate = float(m.group(3))
                 # tqdm may report "s/it" (slow) or "it/s" (fast)
-                _render_its = (1.0 / rate) if "s/it" in clean else rate
+                _render_its = (1.0 / rate) if m.group(4) == "s/it" else rate
+                if _progress_start is None:
+                    _progress_start = (time.time(), _render_progress()[1])
             # Track scene transitions (pytti logs "Running prompt:" for each scene)
             if _SCENE_RE.search(clean):
                 _scene_prompt_count += 1
                 # First "Running prompt:" is scene 0 starting; subsequent ones mean prior scene completed
                 _render_scene = max(0, _scene_prompt_count - 1)
+                _render_step = 0  # the new scene's bar starts at 0; its first line has no rate yet
             end = _VIDEO_END_RE.search(clean)
             if end:
                 _render_end_step = int(end.group(1))
             with _log_lock:
-                if m and _log_lines and last_progress_idx == len(_log_lines) - 1:
-                    _log_lines[-1] = clean  # keep one line per progress bar instead of one per redraw
+                # Keep one line per progress bar instead of one per redraw
+                if last_idx == len(_log_lines) - 1 and (redrawn or bar):
+                    _log_lines[-1] = clean
                 else:
                     _log_lines.append(clean)
-                last_progress_idx = len(_log_lines) - 1 if m else -1
+                last_idx = len(_log_lines) - 1 if redraw or (bar and displayed) else -1
+                redrawn = redraw
     except Exception as e:
         # Nobody would drain the pipe anymore, so the render would stall; stop it instead
         with _log_lock:
             _log_lines.append(f"Log reader failed ({e!r}); stopping render.")
         _kill_tree(proc)
     finally:
-        proc.wait()
-        with _proc_lock:
-            if proc is _proc:  # a newer render may have started since this one was stopped
-                if not _stop_requested:
-                    if proc.returncode == 0:
-                        _append_summary("RENDER COMPLETE")
-                    else:
-                        _append_summary(f"RENDER ENDED (exit code {proc.returncode})")
-                _running = False
-                _render_its = 0.0
+        try:
+            proc.wait()
+            with _proc_lock:
+                if proc is _proc:  # a newer render may have started since this one was stopped
+                    try:
+                        if not _stop_requested:
+                            code = proc.returncode
+                            _render_status = "Render complete." if code == 0 else f"Render ended (exit code {code})."
+                            _append_summary("RENDER COMPLETE" if code == 0 else f"RENDER ENDED (exit code {code})")
+                            _save_render_log()
+                    finally:
+                        # Even if the summary failed; otherwise Start Render would say "Already running." for good
+                        _running = False
+                        _render_its = 0.0
+        finally:
+            _keep_awake(False)
 
 
 def _format_eta(seconds: float) -> str:
@@ -494,41 +619,75 @@ def _format_eta(seconds: float) -> str:
 
 
 def _get_eta() -> str:
-    """Calculate and return an ETA string based on observed it/s and config."""
-    if not _running or _render_its <= 0:
+    """ETA of the render from the observed it/s and its config; blank until a rate is known."""
+    its = _render_its
+    if its <= 0:
         return ""
     total_steps, done = _render_progress()
     remaining = max(0, total_steps - done)
     if remaining == 0:
         return "ETA: finishing..."
-    eta_sec = remaining / _render_its
-    return f"ETA: ~{_format_eta(eta_sec)} remaining ({_render_its:.1f} it/s, {done}/{total_steps} steps)"
+    eta_sec = remaining / its
+    return f"ETA: ~{_format_eta(eta_sec)} remaining ({its:.1f} it/s, {done}/{total_steps} steps)"
+
+
+# Where a copy named ffmpeg.exe goes when it can't go next to python.exe
+_FFMPEG_TEMP_DIR = Path(tempfile.gettempdir()) / "pytti-ffmpeg"
+
+
+def _copy_file(src: Path, dst: Path):
+    """Copy src to dst unless dst already matches it; under a temp name first, so a failed copy never leaves a partial dst."""
+    with contextlib.suppress(OSError):
+        s, d = src.stat(), dst.stat()
+        if s.st_size == d.st_size and int(s.st_mtime) == int(d.st_mtime):
+            return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def _ffmpeg_exe() -> str | None:
-    """Find ffmpeg: the one on PATH, else the copy bundled with imageio-ffmpeg.
+    """Find ffmpeg: python\\ffmpeg.exe, else the build bundled with imageio-ffmpeg, else one on PATH.
 
-    In the portable install the bundled binary is copied next to python.exe as
-    ffmpeg.exe, so pytti's own bare "ffmpeg" calls (Video Source conversion) find it too.
+    The bundled build is known to have the encoders the app relies on (libx264,
+    prores_ks); one on PATH may not (LGPL builds leave out libx264). In the portable
+    install it is copied next to python.exe as ffmpeg.exe, where pytti's own bare
+    "ffmpeg" calls (Video Source conversion, audio) find it before anything on PATH.
     """
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
     local = EMBEDDED_PYTHON.parent / "ffmpeg.exe"
-    if local.exists():
+    if local.is_file():
         return str(local)
     try:
         import imageio_ffmpeg
         bundled = imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        return None
+        return shutil.which("ffmpeg")
     if PYTHON_EXE == EMBEDDED_PYTHON:
-        try:
-            shutil.copy2(bundled, local)
+        with contextlib.suppress(OSError):
+            _copy_file(Path(bundled), local)
             return str(local)
-        except OSError:
-            pass
     return bundled
+
+
+def _ffmpeg_folder(ffmpeg: str) -> str | None:
+    """A folder holding this ffmpeg under the name ffmpeg.exe, for the render's PATH.
+
+    pytti runs a bare "ffmpeg"; the bundled binary is named like ffmpeg-win64-v4.2.2.exe,
+    so if it couldn't be copied next to python.exe, a copy goes in a temp folder.
+    """
+    path = Path(ffmpeg)
+    if path.stem.lower() == "ffmpeg":
+        return str(path.parent)
+    try:
+        _copy_file(path, _FFMPEG_TEMP_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg"))
+    except OSError:
+        return None
+    return str(_FFMPEG_TEMP_DIR)
 
 
 def _new_run_dir() -> Path:
@@ -542,10 +701,16 @@ def _new_run_dir() -> Path:
 
 
 def start_render(conf_name: str):
-    global _proc, _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended, _render_dir, _render_namespace, _render_end_step
+    global _proc, _running, _render_its, _render_step, _render_scene, _scene_prompt_count, _render_conf, _render_start, _stop_requested, _summary_appended, _render_dir, _render_namespace, _render_end_step, _progress_start, _render_status
     with _proc_lock:
         if _running:
             return "Already running."
+        # Snapshot config for ETA calculations
+        name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
+        try:
+            render_conf = load_conf(name)
+        except PresetError as e:
+            return str(e)
         with _log_lock:
             _log_lines.clear()
         _stop_requested = False
@@ -555,14 +720,15 @@ def start_render(conf_name: str):
         _render_scene = 0
         _scene_prompt_count = 0
         _render_end_step = None
+        _progress_start = None
+        _render_status = None
         _render_start = time.time()
-        # Snapshot config for ETA calculations
-        name = conf_name if conf_name.endswith(".yaml") else conf_name + ".yaml"
-        _render_conf = load_conf(name) if (CONF_DIR / name).exists() else {}
+        _render_conf = render_conf
         conf_name = conf_name.removesuffix(".yaml")
         # Choose the run folder ourselves so the preview and summary know where frames go
         _render_dir = _new_run_dir()
-        _render_namespace = str(_render_conf.get("file_namespace") or load_defaults().get("file_namespace", ""))
+        # The preset's own value, even if blank: that is the folder pytti saves into
+        _render_namespace = str(_render_conf.get("file_namespace", load_defaults().get("file_namespace", "")))
         overrides = [f"conf='{conf_name}'", f"hydra.run.dir='{_render_dir.relative_to(ROOT).as_posix()}'"]
         seed = _render_conf.get("seed")
         if re.fullmatch(r"-?\d+", str(seed)):
@@ -580,19 +746,21 @@ def start_render(conf_name: str):
         # told to; earlier torch versions ignore the variable.
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "LOGURU_LEVEL": "INFO",
                "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
+        # pytti runs a bare "ffmpeg" (Video Source conversion, audio); make it the one the UI uses
         ffmpeg = _ffmpeg_exe()
-        if ffmpeg and Path(ffmpeg).stem.lower() == "ffmpeg":
-            env["PATH"] = str(Path(ffmpeg).parent) + os.pathsep + env.get("PATH", "")
+        ffmpeg_dir = _ffmpeg_folder(ffmpeg) if ffmpeg else None
+        if ffmpeg_dir:
+            env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
         try:
+            # Binary stdout: _stream_output decodes it itself to see progress redraws.
+            # No stdin, so a key pressed in the console can't stop ffmpeg ('q') mid-conversion.
             _proc = subprocess.Popen(
                 [str(PYTHON_EXE), "-W", "ignore", "-m", "pytti.workhorse", *overrides],
                 cwd=str(ROOT),
                 env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
                 start_new_session=os.name != "nt",  # lets _kill_tree signal the whole group
             )
         except OSError as e:
@@ -602,24 +770,30 @@ def start_render(conf_name: str):
     return "Render started."
 
 
+def _subdirs(folder: Path, reverse: bool = False) -> list[Path]:
+    """Sorted subfolders of folder; [] if it can't be listed."""
+    try:
+        return sorted((path for path in folder.iterdir() if path.is_dir()), reverse=reverse)
+    except OSError:
+        return []
+
+
+def _png_count(folder: Path) -> int:
+    """Number of PNG files in folder; 0 if it can't be listed."""
+    try:
+        with os.scandir(folder) as entries:
+            return sum(1 for entry in entries if entry.name.endswith(".png"))
+    except OSError:
+        return 0
+
+
 def get_encodable_runs():
     """Scan outputs/ for runs that have PNG frames."""
     runs = []
-    if not OUTPUTS_DIR.exists():
-        return runs
-    for day_dir in sorted(OUTPUTS_DIR.iterdir(), reverse=True):
-        if not day_dir.is_dir():
-            continue
-        for time_dir in sorted(day_dir.iterdir(), reverse=True):
-            if not time_dir.is_dir():
-                continue
-            images_out = time_dir / "images_out"
-            if not images_out.exists():
-                continue
-            for ns_dir in sorted(images_out.iterdir()):
-                if not ns_dir.is_dir():
-                    continue
-                frames = sum(1 for entry in os.scandir(ns_dir) if entry.name.endswith(".png"))
+    for day_dir in _subdirs(OUTPUTS_DIR, reverse=True):
+        for time_dir in _subdirs(day_dir, reverse=True):
+            for ns_dir in _subdirs(time_dir / "images_out"):
+                frames = _png_count(ns_dir)
                 if frames:
                     label = f"{day_dir.name}/{time_dir.name} ({ns_dir.name}) — {frames} frames"
                     runs.append((label, str(ns_dir)))
@@ -630,15 +804,26 @@ def run_fps(frames_dir: str):
     """frames_per_second a run was rendered with, from the config Hydra saved in its folder."""
     config = Path(frames_dir).parent.parent / ".hydra" / "config.yaml"
     try:
-        return _num(load_yaml(config).get("frames_per_second"), None)
-    except (OSError, yaml.YAMLError):
+        data = load_yaml(config)
+    except (OSError, ValueError, yaml.YAMLError):  # ValueError: not UTF-8
         return None
+    return _num(data.get("frames_per_second"), None) if isinstance(data, dict) else None
 
 
 def _frame_number(path: Path):
     """Sort key: frame number, so unpadded names (frame_10.png after frame_9.png) order correctly too."""
     m = re.search(r"(\d+)\.png$", path.name)
     return (int(m.group(1)) if m else -1, path.name)
+
+
+def _discard_encode(proc: subprocess.Popen, part: Path):
+    """Stop an encode and delete its unfinished output."""
+    proc.kill()
+    with contextlib.suppress(OSError):
+        proc.stdin.close()
+    proc.wait()
+    with contextlib.suppress(OSError):
+        part.unlink(missing_ok=True)
 
 
 def encode_video(frames_dir: str, fps: int, fmt: str):
@@ -648,28 +833,38 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
     frames_path = Path(frames_dir)
     if not frames_path.is_dir():
         return f"Directory not found: {frames_dir}"
-    pngs = sorted(frames_path.glob("*.png"), key=_frame_number)
+    pngs = sorted(_pngs(frames_path), key=_frame_number)
     if not pngs:
         return "No PNG frames found."
     if not fps or fps < 1:
         return "Set FPS to at least 1."
     fps = int(fps)
 
-    # Output path
+    # Convert to BT.709 and tag it, which players assume for HD-sized video; ffmpeg's
+    # default conversion is an untagged BT.601 one, so hues shift on playback
+    bt709 = ("scale=out_color_matrix=bt709:out_range=tv,"
+             "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709")
+    color_tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
     run_dir = frames_path.parent.parent  # up from images_out/namespace/
     if fmt == "ProRes 4444 (MOV)":
         suffix = "_prores4444.mov"
-        codec_args = ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le"]
+        codec_args = ["-vf", bt709, "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le",
+                      "-movflags", "+write_colr"]
     elif fmt == "ProRes HQ (MOV)":
         suffix = "_proreshq.mov"
-        codec_args = ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]
+        codec_args = ["-vf", bt709, "-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le",
+                      "-movflags", "+write_colr"]
     else:  # MP4
         suffix = ".mp4"
         # yuv420p needs even dimensions; pad odd sizes by one pixel
-        codec_args = ["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                      "-c:v", "libx264", "-crf", "17", "-preset", "slow", "-pix_fmt", "yuv420p"]
+        codec_args = ["-vf", bt709 + ",pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                      "-c:v", "libx264", "-crf", "17", "-preset", "slow", "-pix_fmt", "yuv420p",
+                      "-movflags", "+faststart"]
 
     out_file = run_dir / f"{frames_path.name}_{fps}fps{suffix}"
+    # ffmpeg empties its output file before encoding, so encode under a temp name: a
+    # failed encode then can't cost the previous export with the same settings
+    part = out_file.with_name(f"{out_file.stem}.part{out_file.suffix}")
 
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
@@ -677,8 +872,9 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
     # Pipe the frames in order rather than using an image-sequence pattern, which stops
     # at the first gap in the numbering and breaks on '%' in the path
     cmd = [ffmpeg, "-y", "-f", "image2pipe", "-framerate", str(fps), "-c:v", "png", "-i", "-"]
-    cmd += codec_args + [str(out_file)]
+    cmd += codec_args + color_tags + [str(part)]
     deadline = time.time() + max(600, 5 * len(pngs))
+    written = skipped = 0
     with tempfile.TemporaryFile() as ffmpeg_log:
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=ffmpeg_log)
@@ -688,25 +884,53 @@ def encode_video(frames_dir: str, fps: int, fmt: str):
             for png in pngs:
                 if time.time() > deadline:
                     raise subprocess.TimeoutExpired(cmd, 0)
-                proc.stdin.write(png.read_bytes())
-            proc.stdin.close()
-            proc.wait(timeout=max(1.0, deadline - time.time()))
-        except OSError:
-            # ffmpeg quit early and closed the pipe; its log says why
+                try:
+                    data = png.read_bytes()
+                except OSError as e:
+                    _discard_encode(proc, part)
+                    return f"Could not read {png.name}: {e.strerror or e}. Close any program using it and try again."
+                if not data.endswith(_PNG_END):
+                    # Still being written, or cut short: ffmpeg would drop it and every frame after it
+                    skipped += 1
+                    continue
+                try:
+                    proc.stdin.write(data)
+                except OSError:
+                    break  # ffmpeg quit early and closed the pipe; its log says why
+                written += 1
             with contextlib.suppress(OSError):
                 proc.stdin.close()
-            proc.wait()
+            proc.wait(timeout=max(1.0, deadline - time.time()))
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            out_file.unlink(missing_ok=True)
+            _discard_encode(proc, part)
             return "Encoding timed out."
         ffmpeg_log.seek(0)
         stderr = ffmpeg_log.read().decode("utf-8", "replace")
-    if proc.returncode != 0:
-        out_file.unlink(missing_ok=True)
+    if proc.returncode != 0 or not written:
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)
+        if skipped == len(pngs):
+            return "No finished PNG frames found."
         return f"ffmpeg error:\n{_ffmpeg_error(stderr)}"
-    return f"Encoded {len(pngs)} frames → {out_file.name}\nSaved to: {out_file}"
+    encoded = _frames_encoded(stderr)
+    if encoded is not None and encoded < written:
+        # ffmpeg leaves out a frame it can't decode (one damaged but still ending like a PNG),
+        # sometimes with the frames after it, and still exits 0
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)
+        return f"ffmpeg could decode only {encoded} of {written} frames, so the video was not saved. A frame may be damaged:\n{_ffmpeg_error(stderr)}"
+    try:
+        os.replace(part, out_file)
+    except OSError:
+        with contextlib.suppress(OSError):
+            part.unlink(missing_ok=True)
+        return f"Could not replace {out_file.name}. Close it in your video player and try again."
+    msg = f"Encoded {written} frames → {out_file.name}\nSaved to: {out_file}"
+    if skipped:
+        msg += f"\nSkipped {skipped} unfinished frame{'s' if skipped > 1 else ''}."
+    if _running and _render_dir is not None and frames_path.is_relative_to(_render_dir):
+        msg += "\nThis render is still running, so the video has only the frames saved so far."
+    return msg
 
 
 def _ffmpeg_error(stderr: str) -> str:
@@ -717,16 +941,32 @@ def _ffmpeg_error(stderr: str) -> str:
     return "\n".join((errors or lines)[-8:])
 
 
+def _frames_encoded(stderr: str) -> int | None:
+    """Distinct frames in ffmpeg's output, from its last progress line; None if it printed none."""
+    stats = re.findall(r"^frame=\s*(\d+)(.*)$", stderr.replace("\r", "\n"), re.MULTILINE)
+    if not stats:
+        return None
+    frames, rest = stats[-1]
+    # dup= counts copies of a frame that ffmpeg added to fill a gap left by one it couldn't decode
+    dup = re.search(r"\bdup=\s*(\d+)", rest)
+    return int(frames) - (int(dup.group(1)) if dup else 0)
+
+
 def stop_render():
-    global _running, _stop_requested
+    global _running, _stop_requested, _render_status
     with _proc_lock:
         proc = _proc
         if not (proc and _running):
             return "No render running."
+        # The reader drops output from here on, so the log ends with this summary
         _stop_requested = True
-        _append_summary("RENDER STOPPED")
-        _running = False
-        _kill_tree(proc)
+        _render_status = "Render stopped."
+        try:
+            _append_summary("RENDER STOPPED")
+            _save_render_log()
+        finally:
+            _running = False
+            _kill_tree(proc)
     return "Render stopped."
 
 
@@ -744,14 +984,14 @@ def get_log():
 
 def _latest_run_frames(namespace: str) -> list[Path]:
     """Frames of the newest run under outputs/ that used this namespace."""
-    if not namespace or not OUTPUTS_DIR.is_dir():
+    namespace = (namespace or "").strip()  # saved stripped
+    if not _valid_name(namespace):
         return []
-    for day_dir in sorted(OUTPUTS_DIR.iterdir(), reverse=True):
-        if day_dir.is_dir():
-            for run_dir in sorted(day_dir.iterdir(), reverse=True):
-                frames = list((run_dir / "images_out" / namespace).glob("*.png"))
-                if frames:
-                    return frames
+    for day_dir in _subdirs(OUTPUTS_DIR, reverse=True):
+        for run_dir in _subdirs(day_dir, reverse=True):
+            frames = _pngs(run_dir / "images_out" / namespace)
+            if frames:
+                return frames
     return []
 
 
@@ -768,11 +1008,19 @@ def _png_complete(path: Path) -> bool:
         return False
 
 
+def _modified(path: Path) -> float:
+    """mtime for sorting; 0 for a file deleted since it was listed."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def get_latest_frame(namespace: str):
     """Newest finished frame of the current (or last) render; before any render, of the newest run using namespace."""
     frames = _render_frames() if _render_dir is not None else _latest_run_frames(namespace)
     # outputs/ is served as static files, read from disk as they are, so skip a frame pytti is still writing
-    for frame in sorted(frames, key=lambda p: p.stat().st_mtime, reverse=True):
+    for frame in sorted(frames, key=_modified, reverse=True):
         if _png_complete(frame):
             return str(frame)
     return None
@@ -824,15 +1072,25 @@ def _clean_path(text: str) -> str:
     return path
 
 
+def _missing_file(text) -> str | None:
+    """The cleaned path of a field if it names a local file that doesn't exist; None if blank, a URL or found."""
+    path = _clean_path(text or "")
+    if not path or "://" in path:
+        return None
+    # A relative path _clean_path couldn't resolve isn't found from the render's folder either
+    return None if Path(path).is_absolute() and Path(path).is_file() else path
+
+
+def _split_image_prompts(text: str) -> list[list[str]]:
+    """[image, :weight_mask suffix if any] of each | separated direct image prompt."""
+    # Same split pytti uses: a colon followed by a slash or backslash is part of the path
+    parts = [re.split(r":(?![\\/])", prompt.strip(), maxsplit=1) for prompt in text.split("|")]
+    return [part for part in parts if part[0]]
+
+
 def _clean_image_prompts(text: str) -> str:
     """Apply _clean_path to the image of each | separated prompt, keeping its :weight_mask suffix."""
-    prompts = []
-    for prompt in text.split("|"):
-        # Same split pytti uses: a colon followed by a slash or backslash is part of the path
-        image, *weight = re.split(r":(?![\\/])", prompt.strip(), maxsplit=1)
-        if image:
-            prompts.append(":".join([_clean_path(image)] + weight))
-    return " | ".join(prompts)
+    return " | ".join(":".join([_clean_path(image)] + weight) for image, *weight in _split_image_prompts(text))
 
 
 def _clean_scenes(text: str) -> str:
@@ -840,13 +1098,34 @@ def _clean_scenes(text: str) -> str:
     return " || ".join(" ".join(scene.split()) for scene in text.split("||") if scene.strip())
 
 
-RANDOM_SEED = "${now:%f}"  # resolved by Hydra when the render starts; see _render_args
+# What a blank Seed saves. Hydra would resolve it, but start_render replaces it with a
+# random seed=N override, so the seed can be shown in the log and reused
+RANDOM_SEED = "${now:%f}"
 
 
 def _seed_value(text) -> int | str:
     """A whole-number seed, or RANDOM_SEED when the field is blank."""
     text = str(text).strip()
     return int(text) if re.fullmatch(r"-?\d+", text) else RANDOM_SEED
+
+
+def _learning_rate_value(text) -> float | None:
+    """Learning Rate as saved: None (auto) when blank."""
+    text = "" if text is None else str(text).strip()
+    return float(text) if text else None
+
+
+def _weight_value(text) -> str:
+    """A loss weight field as saved: blank when it is zero.
+
+    pytti skips a loss only for '' or '0', and still computes one weighted '0.0' every
+    step. Expressions and mask syntax are kept as typed.
+    """
+    text = str(text or "").strip()
+    try:
+        return "" if float(text) == 0 else text
+    except ValueError:
+        return text
 
 
 def build_conf_dict(
@@ -878,8 +1157,8 @@ def build_conf_dict(
         "scene_suffix": _clean_prompt_field(scene_suffix, leading_pipe=True),
         "direct_image_prompts": _clean_image_prompts(direct_image_prompts),
         "init_image": _clean_path(init_image),
-        "direct_init_weight": direct_init_weight,
-        "semantic_init_weight": semantic_init_weight,
+        "direct_init_weight": _weight_value(direct_init_weight),
+        "semantic_init_weight": _weight_value(semantic_init_weight),
         "image_model": image_model,
         "vqgan_model": vqgan_model,
         "animation_mode": animation_mode,
@@ -902,7 +1181,7 @@ def build_conf_dict(
         "cutouts": int(cutouts),
         "cut_pow": float(cut_pow),
         "cutout_border": float(cutout_border),
-        "learning_rate": float(learning_rate) if str(learning_rate or "").strip() else None,
+        "learning_rate": _learning_rate_value(learning_rate),
         "seed": _seed_value(seed),
         "reset_lr_each_frame": reset_lr_each_frame,
         "border_mode": border_mode,
@@ -929,18 +1208,18 @@ def build_conf_dict(
         "frames_per_second": int(frames_per_second),
         "save_every": int(save_every),
         "display_every": int(display_every),
-        "file_namespace": file_namespace,
+        "file_namespace": str(file_namespace or "").strip(),
         "backups": int(backups),
         "field_of_view": int(field_of_view),
         "near_plane": int(near_plane),
         "far_plane": int(far_plane),
         "gradient_accumulation_steps": int(gradient_accumulation_steps),
         "smoothing_weight": float(smoothing_weight),
-        "direct_stabilization_weight": direct_stabilization_weight,
-        "semantic_stabilization_weight": semantic_stabilization_weight,
-        "depth_stabilization_weight": depth_stabilization_weight,
-        "edge_stabilization_weight": edge_stabilization_weight,
-        "flow_stabilization_weight": flow_stabilization_weight,
+        "direct_stabilization_weight": _weight_value(direct_stabilization_weight),
+        "semantic_stabilization_weight": _weight_value(semantic_stabilization_weight),
+        "depth_stabilization_weight": _weight_value(depth_stabilization_weight),
+        "edge_stabilization_weight": _weight_value(edge_stabilization_weight),
+        "flow_stabilization_weight": _weight_value(flow_stabilization_weight),
         "reencode_each_frame": reencode_each_frame,
         "input_audio": _clean_path(input_audio),
         "input_audio_offset": float(input_audio_offset),
@@ -955,34 +1234,150 @@ CONF_FIELDS = tuple(inspect.signature(build_conf_dict).parameters)
 CONF_KEYS = frozenset(CONF_FIELDS)
 
 # Letters, digits, space, - _ . (no quotes or path separators, which would break the
-# conf='<name>' override or write outside config/conf); a leading _ hides it from the list
+# conf='<name>' override or write outside config/conf); a leading _ hides it from the list.
+# No trailing space or dot, which Windows drops from file and folder names.
 _CONF_NAME_RE = re.compile(r"[^\W_](?:[\w .-]*[\w-])?")
+# Device names Windows reserves, alone or with an extension
+_RESERVED_NAME_RE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])(?:\..*)?", re.IGNORECASE)
+# Motion settings each animation mode evaluates; a blank one stops the render
+_MOTION_KEYS = {
+    "2D": ("translate_x", "translate_y", "rotate_2d", "zoom_x_2d", "zoom_y_2d"),
+    "3D": ("translate_x", "translate_y", "translate_z_3d", "rotate_3d"),
+}
+# Preset keys pytti or Hydra read that default.yaml doesn't list
+_OPTIONAL_KEYS = {"defaults", "hydra", "restore", "mmc_models"}
+
+
+def _conf_name(name) -> str:
+    """A config name as typed, stripped and without .yaml."""
+    name = str(name or "").strip()
+    return name[:-len(".yaml")] if name.lower().endswith(".yaml") else name
+
+
+def _valid_name(name: str) -> bool:
+    """Whether name works as a config name and as File Namespace, which pytti uses as a folder name."""
+    return bool(_CONF_NAME_RE.fullmatch(name)) and not _RESERVED_NAME_RE.fullmatch(name)
+
+
+def _name_problem(name: str, subject: str) -> str | None:
+    """Why name can't be used, worded for the status box; None if it can."""
+    if _RESERVED_NAME_RE.fullmatch(name):
+        return f"{subject} can't be {name}: Windows reserves that name."
+    if not _CONF_NAME_RE.fullmatch(name):
+        return f"{subject} can use letters, numbers, spaces, - _ and ., must start with a letter or number, and can't end with a space or dot."
+    return None
 
 
 def conf_problems(name: str, values: dict, labels: dict) -> list[str]:
-    """Settings that can't be saved or would crash pytti, worded for the status box."""
+    """Settings that can't be saved or would crash pytti, worded for the status box.
+
+    name is the config name as _conf_name returns it.
+    """
     problems = []
     if not name:
         problems.append("Enter a config name first.")
-    elif not _CONF_NAME_RE.fullmatch(name.removesuffix(".yaml")):
-        problems.append("Config names can use letters, numbers, spaces, - _ and . and must start with a letter or number.")
+    elif name.lower().endswith((".yml", ".yaml")):
+        # Hydra would take it for a file name with an extension and not find the preset
+        problems.append("Config names can't end in .yml or .yaml.")
+    elif problem := _name_problem(name, "Config names"):
+        problems.append(problem)
     empty = [labels[key] for key, value in values.items() if value is None]
     if empty:
         problems.append("Fill in: " + ", ".join(empty) + ".")
-    seed = str(values["seed"]).strip()
+    if values["file_namespace"] is not None:
+        namespace = str(values["file_namespace"]).strip()
+        if not namespace:
+            problems.append(f"{labels['file_namespace']} can't be blank.")
+        elif problem := _name_problem(namespace, labels["file_namespace"]):
+            problems.append(problem)
+    for key, choices in CHOICES.items():
+        if values[key] is not None and values[key] not in choices:
+            problems.append(f"{labels[key]} '{values[key]}' isn't a valid choice.")
+    mode, image_model = values["animation_mode"], values["image_model"]
+    if values["scenes"] is not None and not _clean_scenes(values["scenes"]):
+        problems.append("Scenes can't be empty (any short text prompt works with an init image).")
+    if mode == "Video Source" and not _clean_path(values["video_path"] or ""):
+        problems.append("Set a Video Path for Video Source mode.")
+    if not any(values[key] for key in CLIP_MODELS):
+        problems.append("Tick at least one CLIP model.")
+    blank_motion = [labels[key] for key in _MOTION_KEYS.get(mode, ()) if values[key] is not None and not str(values[key]).strip()]
+    if blank_motion:
+        problems.append(f"{', '.join(blank_motion)} can't be blank in {mode} mode.")
+    seed = "" if values["seed"] is None else str(values["seed"]).strip()
     if seed and not re.fullmatch(r"-?\d+", seed):
         problems.append("Seed must be a whole number, or blank for random.")
-    try:
-        float(str(values["learning_rate"]).strip() or 0)
-    except ValueError:
-        problems.append("Learning Rate must be a number, or blank for auto.")
-    for key in ("steps_per_frame", "frames_per_second", "gradient_accumulation_steps"):
+    elif seed and not -2**63 <= int(seed) < 2**64:  # what torch.manual_seed accepts
+        problems.append("Seed must be between -9223372036854775808 and 18446744073709551615, or blank for random.")
+    rate = "" if values["learning_rate"] is None else str(values["learning_rate"]).strip()
+    if rate:
+        try:
+            rate_ok = math.isfinite(float(rate)) and float(rate) > 0
+        except ValueError:
+            rate_ok = False
+        if not rate_ok:
+            problems.append("Learning Rate must be a number above 0, or blank for auto.")
+    at_least_1 = ["steps_per_scene", "steps_per_frame", "frames_per_second", "gradient_accumulation_steps", "cutouts", "pixel_size"]
+    if image_model == "Limited Palette":
+        at_least_1 += ["palette_size", "palettes"]
+    if mode == "Video Source":
+        at_least_1.append("frame_stride")
+    for key in at_least_1:
         if values[key] is not None and values[key] < 1:
             problems.append(f"{labels[key]} must be at least 1.")
     cutouts, accumulation = values["cutouts"], values["gradient_accumulation_steps"]
-    if cutouts is not None and accumulation and int(cutouts) % int(accumulation):
+    if cutouts is not None and accumulation and accumulation > 0 and int(cutouts) % int(accumulation):
         problems.append(f"{labels['cutouts']} ({int(cutouts)}) must be divisible by {labels['gradient_accumulation_steps']} ({int(accumulation)}).")
+    has_init = bool(_clean_path(values["init_image"] or ""))
+    width, height, pixel_size = values["width"], values["height"], values["pixel_size"]
+    if width == -1 and height == -1:
+        problems.append(f"{labels['width']} and {labels['height']} can't both be -1.")
+    else:
+        for key in ("width", "height"):
+            size = values[key]
+            if size == -1 and not (has_init or mode == "Video Source"):
+                problems.append(f"{labels[key]} can be -1 only with an Init Image or in Video Source mode.")
+            elif size is not None and size != -1 and size < 1:
+                problems.append(f"{labels[key]} must be at least 1, or -1 to follow the init image's shape.")
+    # The depth model (3D camera moves, depth stabilization) fails on frames with fewer than
+    # 129 32-pixel blocks; in "off" mode depth stabilization only runs against an init image
+    uses_depth = mode == "3D" or (_weight_value(values["depth_stabilization_weight"]) and (mode != "off" or has_init))
+    if uses_depth and None not in (width, height, pixel_size) and min(width, height, pixel_size) >= 1:
+        frame_w, frame_h = int(width) * int(pixel_size), int(height) * int(pixel_size)
+        if (frame_w // 32) * (frame_h // 32) < 129:
+            problems.append(f"3D mode and depth stabilization need a frame of at least about 384x384, and Width x Pixel Size by Height x Pixel Size is {frame_w}x{frame_h}. For example, 512x288 works but 512x256 does not.")
+    fov = values["field_of_view"]
+    if mode == "3D" and fov is not None and not 0 < fov < 180:
+        problems.append(f"{labels['field_of_view']} must be more than 0 and less than 180.")
     return problems
+
+
+def missing_files(values: dict, labels: dict, extras: dict | None = None) -> list[str]:
+    """Input files the render would open that don't exist, worded for the status box.
+
+    A render would fail on them only after its models have loaded. A preset can still be
+    saved without them, e.g. while its media is on a drive that isn't connected. extras
+    holds the preset's keys that have no widget; its input_audio_filters decide whether
+    Input Audio is read.
+    """
+    files = [("init_image", values["init_image"])]
+    files += [("direct_image_prompts", image) for image, *_ in _split_image_prompts(values["direct_image_prompts"] or "")]
+    if values["animation_mode"] == "Video Source":
+        files.append(("video_path", values["video_path"]))
+    if values["image_model"] == "Limited Palette":
+        files.append(("target_palette", values["target_palette"]))
+    if (extras or {}).get("input_audio_filters", load_defaults().get("input_audio_filters")):
+        files.append(("input_audio", values["input_audio"]))
+    return [f"File not found: {missing} ({labels[key]})." for key, text in files if (missing := _missing_file(text))]
+
+
+def _unknown_key_notes(data: dict) -> list[str]:
+    """A note naming preset keys pytti doesn't read, which are often typos, with the closest real key."""
+    known = set(load_defaults()) | _OPTIONAL_KEYS
+    unknown = []
+    for key in sorted(str(key) for key in data if key not in known):
+        match = difflib.get_close_matches(key, known, n=1)
+        unknown.append(f"{key} (did you mean {match[0]}?)" if match else key)
+    return [f"Unknown settings, ignored by pytti: {', '.join(unknown)}."] if unknown else []
 
 
 def _conf_notes(data: dict) -> list[str]:
@@ -991,29 +1386,45 @@ def _conf_notes(data: dict) -> list[str]:
     flow_samples = int(data.get("flow_long_term_samples") or 0)
     if data.get("animation_mode") == "Video Source" and flow_samples > 0:
         # Long-term optical flow reloads the frame 2^N back from the rolling .bak files
-        data["backups"] = max(int(data.get("backups") or 0), 2 ** flow_samples + 1)
+        needed = 2 ** flow_samples + 1
+        if int(data.get("backups") or 0) < needed:
+            data["backups"] = needed
+            notes.append(f"Backups raised to {needed} for long-term optical flow.")
     spf, pre = int(data["steps_per_frame"]), int(data["pre_animation_steps"])
     if data.get("animation_mode") != "off" and int(data.get("save_every") or 0) <= 0 and spf > 0 and pre % spf:
         # Frames are saved every steps_per_frame steps from step 0, camera moves start at pre_animation_steps
         notes.append(f"Tip: make Pre-animation Steps a multiple of Steps per Frame ({spf}) so each frame is saved fully refined.")
+    scenes = [scene for scene in str(data.get("scenes") or "").split("||") if scene.strip()]
+    interpolation, per_scene = int(data.get("interpolation_steps") or 0), int(data["steps_per_scene"])
+    if len(scenes) > 1 and interpolation > per_scene:
+        # The previous scene fades out over the first interpolation_steps of each scene
+        notes.append(f"Tip: Interpolation Steps ({interpolation}) is more than Steps per Scene ({per_scene}), so crossfades between scenes never finish.")
+    if data.get("breath_mode") and not str(data.get("init_image") or "").strip():
+        notes.append("Breath Mode does nothing without an Init Image.")
     if data.get("input_audio") and not (data.get("input_audio_filters") or load_defaults().get("input_audio_filters")):
         notes.append("Input audio is ignored until input_audio_filters are added to the preset YAML.")
-    return notes
+    return notes + _unknown_key_notes(data)
 
 
-def write_conf(name: str, extras: dict | None, values: dict) -> tuple[str, list[str]]:
-    """Save the UI fields to conf/<name>.yaml without dropping keys the UI has no widget for.
-
-    Those keys (e.g. input_audio_filters) come from the existing file, or, when saving
-    under a new name, from the preset that was last loaded.
+def preset_base(name: str, extras: dict | None) -> dict:
+    """The keys a save keeps besides the UI fields: those of the existing conf/<name>.yaml,
+    or for a new file those carried over from the preset that was last loaded (e.g.
+    input_audio_filters). PresetError if the existing file can't be read.
     """
-    filename = name if name.endswith(".yaml") else name + ".yaml"
-    path = CONF_DIR / filename
-    data = load_yaml(path) if path.exists() else dict(extras or {})
-    data.update(build_conf_dict(**values))
+    if _valid_name(name) and (CONF_DIR / f"{name}.yaml").exists():
+        return load_conf(f"{name}.yaml")
+    return dict(extras or {})
+
+
+def write_conf(filename: str, base: dict, values: dict) -> list[str]:
+    """Save the UI fields over base to conf/<filename>; returns notes for the status box."""
+    conf = build_conf_dict(**values)
+    # The UI's settings in its order, then the keys it has no widget for
+    data = {key: conf[key] for key in CONF_FIELDS}
+    data.update((key, value) for key, value in base.items() if key not in CONF_KEYS)
     notes = _conf_notes(data)
-    save_yaml(path, data, header="# @package _global_\n")
-    return filename, notes
+    save_yaml(CONF_DIR / filename, data, header="# @package _global_\n")
+    return notes
 
 
 def _text_value(key: str, value) -> str:
@@ -1022,9 +1433,9 @@ def _text_value(key: str, value) -> str:
         return " ".join(str(value or "").split())
     if key == "seed":
         return "" if value is None or str(value).startswith("${") else str(value)
-    if key == "learning_rate" or key.endswith("_weight"):
-        return str(value or "")  # 0 and blank both mean auto / off
-    return "" if value is None else str(value)
+    if key.endswith("_weight"):
+        return str(value or "")  # 0 and blank both mean off
+    return "" if value is None else str(value)  # Learning Rate: only None means auto
 
 
 def _ui_value(key: str, widget, value, default):
@@ -1036,7 +1447,7 @@ def _ui_value(key: str, widget, value, default):
     if isinstance(widget, gr.Dropdown):
         if key == "animation_mode" and value is False:  # YAML reads a bare `off` as False
             return "off"
-        return _LEGACY_VQGAN_NAMES.get(value, value) if key == "vqgan_model" else value
+        return _LEGACY_VQGAN_NAMES.get(value, value) if key == "vqgan_model" and isinstance(value, str) else value
     return _text_value(key, value)
 
 
@@ -1262,9 +1673,9 @@ def make_ui():
             with gr.Tab("Image & Animation"):
                 # — Model & Mode —
                 with gr.Row():
-                    image_model    = gr.Dropdown(label="Image Model",    choices=["Limited Palette", "Unlimited Palette", "VQGAN"],        value=cfg.get("image_model"), info=TIPS["image_model"],    scale=2)
-                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=VQGAN_MODELS, value=cfg.get("vqgan_model"),          info=TIPS["vqgan_model"],    scale=2)
-                    animation_mode = gr.Dropdown(label="Animation Mode", choices=["off", "Video Source", "2D", "3D"],                      value=cfg.get("animation_mode"),           info=TIPS["animation_mode"], scale=1)
+                    image_model    = gr.Dropdown(label="Image Model",    choices=IMAGE_MODELS,    value=cfg.get("image_model"),    info=TIPS["image_model"],    scale=2)
+                    vqgan_model    = gr.Dropdown(label="VQGAN Model",    choices=VQGAN_MODELS,    value=cfg.get("vqgan_model"),    info=TIPS["vqgan_model"],    scale=2)
+                    animation_mode = gr.Dropdown(label="Animation Mode", choices=ANIMATION_MODES, value=cfg.get("animation_mode"), info=TIPS["animation_mode"], scale=1)
 
                 # — Dimensions & Video —
                 with gr.Row():
@@ -1292,9 +1703,9 @@ def make_ui():
 
                 # — Edge Handling —
                 with gr.Row():
-                    border_mode   = gr.Dropdown(label="Border Mode",   choices=["clamp", "mirror", "wrap", "black", "smear"], value=cfg.get("border_mode"),    info=TIPS["border_mode"],   scale=1)
-                    sampling_mode = gr.Dropdown(label="Sampling Mode", choices=["nearest", "bilinear", "bicubic"],            value=cfg.get("sampling_mode"), info=TIPS["sampling_mode"], scale=1)
-                    infill_mode   = gr.Dropdown(label="Infill Mode",   choices=["mirror", "wrap", "black", "smear"],          value=cfg.get("infill_mode"),    info=TIPS["infill_mode"],   scale=1)
+                    border_mode   = gr.Dropdown(label="Border Mode",   choices=BORDER_MODES,   value=cfg.get("border_mode"),   info=TIPS["border_mode"],   scale=1)
+                    sampling_mode = gr.Dropdown(label="Sampling Mode", choices=SAMPLING_MODES, value=cfg.get("sampling_mode"), info=TIPS["sampling_mode"], scale=1)
+                    infill_mode   = gr.Dropdown(label="Infill Mode",   choices=INFILL_MODES,   value=cfg.get("infill_mode"),   info=TIPS["infill_mode"],   scale=1)
 
             # ----------------------------------------------------------------
             # TAB: Steps & CLIP
@@ -1309,7 +1720,7 @@ def make_ui():
                 with gr.Row():
                     cutouts = gr.Number(label="Cutouts", value=cfg.get("cutouts"), precision=0, info=TIPS["cutouts"])
                     cut_pow = gr.Number(label="Cut Power", value=cfg.get("cut_pow"), info=TIPS["cut_pow"])
-                    cutout_border = gr.Number(label="Cutout Border", value=cfg.get("cutout_border"), info="Border width for cutouts. Controls how much padding is added around each cutout.")
+                    cutout_border = gr.Number(label="Cutout Border", value=cfg.get("cutout_border"), info="Pads the image by this fraction of its size so cutouts can reach past the edges. 0 = cutouts stay inside the image.")
                 with gr.Row():
                     learning_rate = gr.Textbox(label="Learning Rate (blank = auto)", value=_text_value("learning_rate", cfg.get("learning_rate")), info=TIPS["learning_rate"])
                     seed = gr.Textbox(label="Seed (blank = random)", value=_text_value("seed", cfg.get("seed")), info=TIPS["seed"])
@@ -1399,6 +1810,8 @@ def make_ui():
                 with gr.Row():
                     encode_btn = gr.Button("Encode Video", variant="primary", scale=2)
                 encode_status = gr.Textbox(label="Encode Status", interactive=False, lines=2)
+                # The run the user picked; refreshing the list keeps it rather than jumping to the newest
+                encode_choice = gr.State(None)
 
             # ----------------------------------------------------------------
             # TAB: Run
@@ -1417,6 +1830,8 @@ def make_ui():
                 progress_box = gr.Textbox(label="Progress", interactive=False, lines=1)
                 # Keys from the last loaded preset that have no widget, carried over when saving under a new name
                 extras_state = gr.State({})
+                # (file name, mtime_ns) of the preset as last loaded or saved here, to notice edits made outside the UI
+                conf_stamp = gr.State(None)
 
                 gr.Markdown("### Live Log")
                 log_box = gr.Textbox(label="Log", lines=20, interactive=False, max_lines=20, elem_id="log-box")
@@ -1491,73 +1906,138 @@ def make_ui():
         # ----------------------------------------------------------------
         # Callbacks
         # ----------------------------------------------------------------
-        def save_config(name, extras, *args):
+        def _save_preset(name, extras, args, for_render=False):
+            """Check the UI's settings and save them as the preset, for Save and Start Render.
+
+            Returns (file name, notes) once saved, or (None, problems) if nothing was written.
+            Missing input files stop only a render; Save mentions them in its notes.
+            """
+            name = _conf_name(name)
             values = dict(zip(CONF_FIELDS, args))
+            try:
+                base = preset_base(name, extras)
+            except PresetError as e:
+                return None, [str(e)]
             problems = conf_problems(name, values, labels)
+            missing = missing_files(values, labels, base)
+            if for_render:
+                problems += missing
             if problems:
-                return gr.update(), " ".join(problems)
-            filename, notes = write_conf(name, extras, values)
-            return gr.Dropdown(choices=get_conf_files()), " ".join([f"Saved to config/conf/{filename}."] + notes)
+                return None, problems
+            filename = f"{name}.yaml"
+            try:
+                return filename, missing + write_conf(filename, base, values)
+            except OSError as e:
+                return None, [f"Could not save config/conf/{filename}: {e.strerror or e}."]
+
+        def _changed_message(filename):
+            return (f"config/conf/{filename} was changed outside PyTTI since it was loaded. "
+                    "Press Load to use those changes, or Save to overwrite them.")
+
+        def save_config(name, extras, stamp, *args):
+            filename = f"{_conf_name(name)}.yaml"
+            changed = _changed_on_disk(filename, stamp)
+            if changed and changed != stamp[2]:
+                # Remember the warning, so pressing Save again overwrites the file
+                return gr.update(), _changed_message(filename), (stamp[0], stamp[1], changed)
+            filename, status = _save_preset(name, extras, args)
+            if filename is None:
+                return gr.update(), " ".join(status), gr.update()
+            saved = [f"Saved to config/conf/{filename}."]
+            return gr.Dropdown(choices=get_conf_files()), " ".join(saved + status), (filename, _conf_mtime(filename), None)
+
+        def _live_view(namespace, running):
+            """Log, latest frame, progress and timer, all from one reading of whether the render runs."""
+            progress = (_get_eta() or "Starting...") if running else ""
+            return get_log(), get_latest_frame(namespace), progress, gr.Timer(active=running)
 
         def refresh(namespace):
-            progress = (_get_eta() or "Starting...") if _running else ""
-            # Stop polling once the render has ended; this final tick still shows its last log and frame
-            return get_log(), get_latest_frame(namespace), progress, gr.Timer(active=_running)
+            # The reader appends the summary before clearing _running, so once this reads False
+            # the log is final; that last tick turns polling off
+            return _live_view(namespace, _running)
 
-        def tick(namespace):
-            # Once the render has ended, offer its frames for encoding
-            return *refresh(namespace), (gr.skip() if _running else refresh_encode_list())
+        def tick(namespace, encode_pick):
+            running = _running
+            view = _live_view(namespace, running)
+            if running:
+                return *view, gr.skip(), gr.skip()
+            # The render has ended: say how, and offer its frames for encoding
+            return *view, _render_status or gr.skip(), refresh_encode_list(encode_pick)
 
         def load_existing(name):
             if not name:
-                return [gr.update()] * (len(all_inputs) + 4)
+                return [gr.update()] * (len(all_inputs) + 5)
             if not (CONF_DIR / name).exists():
-                missing = [f"{name} no longer exists.", gr.Dropdown(choices=get_conf_files(), value=None)]
+                missing = [f"{name} no longer exists.", gr.Dropdown(choices=get_conf_files(), value=None), gr.update()]
                 return [gr.update()] * (len(all_inputs) + 2) + missing
-            data = _resolve_references(merged_config(name))
+            stamp = (name, _conf_mtime(name), None)  # taken first, so an edit made while reading isn't missed
+            try:
+                preset = load_conf(name)
+            except PresetError as e:
+                return [gr.update()] * (len(all_inputs) + 2) + [str(e), gr.update(), gr.update()]
             defaults = load_defaults()
-            extras = {k: v for k, v in load_conf(name).items() if k not in CONF_KEYS}
-            values = [_ui_value(key, fields[key], data.get(key), defaults.get(key)) for key in CONF_FIELDS]
-            return values + [name.removesuffix(".yaml"), extras, f"Loaded {name}.", gr.update()]
+            data = _resolve_references({**defaults, **preset})
+            extras = {k: v for k, v in preset.items() if k not in CONF_KEYS}
+            values, notes = [], []
+            for key in CONF_FIELDS:
+                value = _ui_value(key, fields[key], data.get(key), defaults.get(key))
+                choices = CHOICES.get(key)
+                if choices and value not in choices:
+                    # The dropdown would show it blank but save it back, and the render would fail on it
+                    fallback = _ui_value(key, fields[key], defaults.get(key), None)
+                    fallback = fallback if fallback in choices else choices[0]
+                    notes.append(f"{labels[key]} '{value}' isn't a valid choice; using {fallback}.")
+                    value = fallback
+                values.append(value)
+            status = " ".join([f"Loaded {name}."] + notes + _unknown_key_notes(preset))
+            return values + [_conf_name(name), extras, status, gr.update(), stamp]
 
-        def run_and_activate_timer(name, extras, *args):
+        def run_and_activate_timer(name, extras, stamp, *args):
             if _running:
                 # Don't overwrite a preset that may be in use; just resume live updates
-                return gr.update(), "Already running.", gr.Timer(active=True)
-            values = dict(zip(CONF_FIELDS, args))
-            problems = conf_problems(name, values, labels)
-            if problems:
-                return gr.update(), " ".join(problems), gr.Timer(active=False)
+                return gr.update(), "Already running.", gr.Timer(active=True), gr.update()
+            filename = f"{_conf_name(name)}.yaml"
+            changed = _changed_on_disk(filename, stamp)
+            if changed:
+                # Never render over outside edits; a Save after this warning overwrites them
+                return gr.update(), _changed_message(filename), gr.Timer(active=False), (stamp[0], stamp[1], changed)
             # Auto-save before running so the YAML always matches the UI
-            filename, notes = write_conf(name, extras, values)
+            filename, status = _save_preset(name, extras, args, for_render=True)
+            if filename is None:
+                return gr.update(), " ".join(status), gr.Timer(active=False), gr.update()
+            stamp = (filename, _conf_mtime(filename), None)
             msg = start_render(filename)
-            return gr.Dropdown(choices=get_conf_files()), " ".join([msg] + notes), gr.Timer(active=_running)
+            return gr.Dropdown(choices=get_conf_files()), " ".join([msg] + status), gr.Timer(active=_running), stamp
 
-        def stop_and_deactivate_timer(namespace):
+        def stop_and_deactivate_timer(namespace, encode_pick):
             msg = stop_render()
-            log, frame, progress, _ = refresh(namespace)
-            return msg, gr.Timer(active=False), log, frame, progress, refresh_encode_list()
+            log, frame, progress, _ = _live_view(namespace, False)
+            return msg, gr.Timer(active=False), log, frame, progress, refresh_encode_list(encode_pick)
 
-        def refresh_encode_list():
+        def refresh_encode_list(pick=None):
             runs = get_encodable_runs()
-            return gr.Dropdown(choices=runs, value=runs[0][1] if runs else None)
+            paths = [path for _, path in runs]
+            # Keep the run the user picked while it is still listed; otherwise show the newest
+            return gr.Dropdown(choices=runs, value=pick if pick in paths else (paths[0] if paths else None))
 
         def encode_fps_for_run(frames_dir):
             fps = run_fps(frames_dir) if frames_dir else None
             return fps if fps else gr.skip()
 
-        save_btn.click(fn=save_config, inputs=[conf_name_input, extras_state] + all_inputs, outputs=[load_conf_dropdown, status_box])
-        run_btn.click(fn=run_and_activate_timer, inputs=[conf_name_input, extras_state] + all_inputs, outputs=[load_conf_dropdown, status_box, timer])
-        stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace], outputs=[status_box, timer, log_box, frame_preview, progress_box, encode_run_dropdown])
+        save_btn.click(fn=save_config, inputs=[conf_name_input, extras_state, conf_stamp] + all_inputs, outputs=[load_conf_dropdown, status_box, conf_stamp])
+        run_btn.click(fn=run_and_activate_timer, inputs=[conf_name_input, extras_state, conf_stamp] + all_inputs, outputs=[load_conf_dropdown, status_box, timer, conf_stamp])
+        stop_btn.click(fn=stop_and_deactivate_timer, inputs=[file_namespace, encode_choice], outputs=[status_box, timer, log_box, frame_preview, progress_box, encode_run_dropdown])
         refresh_btn.click(fn=refresh, inputs=[file_namespace], outputs=[log_box, frame_preview, progress_box, timer])
-        timer.tick(fn=tick, inputs=[file_namespace], outputs=[log_box, frame_preview, progress_box, timer, encode_run_dropdown])
-        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input, extras_state, status_box, load_conf_dropdown])
+        timer.tick(fn=tick, inputs=[file_namespace, encode_choice], outputs=[log_box, frame_preview, progress_box, timer, status_box, encode_run_dropdown])
+        load_btn.click(fn=load_existing, inputs=[load_conf_dropdown], outputs=all_inputs + [conf_name_input, extras_state, status_box, load_conf_dropdown, conf_stamp])
         refresh_configs_btn.click(fn=lambda: gr.Dropdown(choices=get_conf_files()), outputs=[load_conf_dropdown])
         # A page reload resets the timer; resume live updates if a render is still going
         demo.load(fn=lambda: gr.Timer(active=_running), outputs=[timer])
 
         # Encode video callbacks
-        encode_refresh_btn.click(fn=refresh_encode_list, outputs=[encode_run_dropdown])
+        encode_refresh_btn.click(fn=refresh_encode_list, inputs=[encode_choice], outputs=[encode_run_dropdown])
+        # .input fires only for the user's own picks, not when the list is refreshed
+        encode_run_dropdown.input(fn=lambda run: run, inputs=[encode_run_dropdown], outputs=[encode_choice])
         # Default the encode FPS to the frame rate the run was rendered for
         encode_run_dropdown.change(fn=encode_fps_for_run, inputs=[encode_run_dropdown], outputs=[encode_fps])
         encode_btn.click(fn=encode_video, inputs=[encode_run_dropdown, encode_fps, encode_format], outputs=[encode_status])
@@ -1567,7 +2047,31 @@ def make_ui():
     return demo
 
 
+_instance_mutex = None  # held for the life of the process
+
+
+def _claim_single_instance() -> bool:
+    """Take a named Windows mutex; False if another PyTTI UI already holds it.
+
+    A second UI knows nothing about the first one's render and could start another on
+    the same GPU, running both out of memory. Windows releases the mutex when the
+    process exits, even after a crash.
+    """
+    global _instance_mutex
+    if os.name != "nt":
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _instance_mutex = kernel32.CreateMutexW(None, False, "Local\\PyTTIPortableUI")
+    return not (_instance_mutex and ctypes.get_last_error() == 183)  # ERROR_ALREADY_EXISTS
+
+
 if __name__ == "__main__":
+    if not _claim_single_instance():
+        print("PyTTI is already running in another window. Use that one (its address is shown there), or close it to start PyTTI again.")
+        sys.exit(0)
     print(f"Using Python: {PYTHON_EXE}")
     demo = make_ui()
-    demo.launch(inbrowser=True, show_api=False)
+    # This PC only: the UI starts renders, and their motion expressions run as Python code
+    demo.launch(inbrowser=True, show_api=False, server_name="127.0.0.1", share=False)
