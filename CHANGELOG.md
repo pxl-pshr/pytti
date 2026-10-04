@@ -1,8 +1,6 @@
 # Changelog
 
-What changed in each version of PyTTI Portable, newest first. The version the app shows comes from `__version__` in `app/ui.py`.
-
-New changes go under **Unreleased** as they land. When you publish a release, rename that heading to the version and date and use the section as the release notes.
+What changed in each version of PyTTI Portable, newest first.
 
 ## [Unreleased]
 
