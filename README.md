@@ -57,7 +57,7 @@ Or download the ZIP from GitHub and extract all of it. Either way, keep the fold
 2. Double-click **`launch.bat`**
 3. A browser window opens — start rendering
 
-To update: `git pull` from the pytti folder. `launch.bat` applies any new pytti-core patches automatically. When an update also changes the packages PyTTI needs, `launch.bat` says the installed packages are out of date: run `install.bat` and answer Y to update them in place. pip skips the packages that are already up to date.
+To update: `git pull` from the pytti folder; [CHANGELOG.md](CHANGELOG.md) lists what changed in each version. `launch.bat` applies any new pytti-core patches automatically. When an update also changes the packages PyTTI needs, `launch.bat` says the installed packages are out of date: run `install.bat` and answer Y to update them in place. pip skips the packages that are already up to date.
 
 Installs made before RTX 50xx support was added run PyTorch 2.0 and keep working. To move one to PyTorch 2.7, which RTX 50xx cards need and which rendered 20-30% faster in tests on an RTX 4090, update it with `install.bat` the same way. That downloads PyTorch again (3.3 GB) and needs NVIDIA driver 528.33 or newer, which `install.bat` checks before it changes anything.
 
@@ -82,6 +82,7 @@ pytti/
 ├── install.bat          # One-time installer (downloads Python, PyTorch, deps)
 ├── launch.bat           # Starts the Gradio UI
 ├── PROMPTING.md         # Prompt and preset format reference
+├── CHANGELOG.md         # What changed in each version
 ├── python/              # Embedded Python and all packages (created by install.bat)
 ├── app/
 │   ├── ui.py            # Gradio web UI
