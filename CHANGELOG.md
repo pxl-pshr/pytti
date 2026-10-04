@@ -7,7 +7,7 @@ What changed in each version of PyTTI Portable, newest first.
 ### Added
 
 - Load Config starts with a (defaults) entry, which fills in the settings from `config/default.yaml` with a blank Config Name. A page reload brings back the preset last loaded or saved, as it is on disk, instead of resetting every field to the defaults.
-- The system check warns when Windows' Smart App Control is on or in evaluation mode. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551".
+- The system check warns when Windows' Smart App Control is on or in evaluation mode, and `launch.bat` warns when it is on, since Windows can switch it on after the install. It blocks PyTorch's unsigned files, and renders then fail with "WinError 4551".
 - Tests that need no GPU, in `tests/`, for the pytti-core and kornia patches, the settings checks behind Save and Start Render, and the files PyTTI Portable downloads from its Hugging Face mirror. GitHub Actions runs them on every push and pull request, and checks the mirror weekly. README.md says how to run them.
 
 ### Changed
@@ -20,6 +20,8 @@ What changed in each version of PyTTI Portable, newest first.
 - Save and Start Render ask before replacing a preset the page didn't load or save, such as one whose name was typed in. Pressing again replaces it. Names that differ only in case count as the same preset, as they do in Windows.
 - Start Render reports mistakes in weight, prompt and camera move expressions, such as an unclosed bracket or a misspelled name, before any model loads. Load and Save mention them too.
 - `LICENSE` holds only the standard MIT text, so GitHub recognizes the license. The notice for the parts derived from pytti-core moved to `NOTICE`.
+- Models download to the pytti folder's `cache\models` instead of `%USERPROFILE%\.cache`, and Video Source conversions go to `cache\video` instead of `%TEMP%\pytti-video-cache`, where copies no render has used for 30 days are deleted. Models that earlier versions downloaded to `%USERPROFILE%\.cache` are still used from there, so nothing is downloaded again; the README's [Disk space](README.md#disk-space) section says how to move them into the pytti folder.
+- `install.bat` keeps pip's download cache and temporary files in the pytti folder, in `cache\pip` and `cache\tmp`, instead of `%LOCALAPPDATA%\pip\cache` and `%TEMP%`. Installing on another drive no longer also needs 8 GB free on the drive with the temp folder, usually C:; the system check asks for about 17 GB on the install drive only.
 
 ### Fixed
 

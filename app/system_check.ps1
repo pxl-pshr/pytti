@@ -18,10 +18,10 @@ $root = Split-Path -Parent $PSScriptRoot
 # python\Lib\site-packages). Without long path support Windows caps full paths at 259 characters.
 $longestInstallPath = 165
 
-# Approximate space needed: the finished python\ folder (about 6.5 GB) with some headroom,
-# and pip's downloads and cache (the PyTorch wheel alone is 3.3 GB)
-$installGB = 9
-$downloadGB = 8
+# Approximate space needed on the install drive: the finished python\ folder (about 6.5 GB),
+# and pip's downloads, cache and temp files, which install.bat keeps in the cache\ folder
+# (the PyTorch wheel alone is 3.3 GB), with some headroom
+$installGB = 17
 
 $script:result = 0
 
@@ -204,18 +204,13 @@ Check 'install folder' {
 
 Check 'disk space' {
     if ($Update) { return }
-    # pip downloads into %TEMP% and caches under %LOCALAPPDATA%, usually the same drive as Windows
-    $need = [ordered]@{}
-    $need[[IO.Path]::GetPathRoot($root)] += $installGB
-    $need[[IO.Path]::GetPathRoot($env:TEMP)] += $downloadGB
-    foreach ($drive in $need.Keys) {
-        $free = [Math]::Floor((New-Object IO.DriveInfo $drive).AvailableFreeSpace / 1GB)
-        $letter = $drive.TrimEnd('\')
-        if ($free -lt $need[$drive]) {
-            Fail "$free GB free on $letter, the install needs about $($need[$drive]) GB there" "Free up space on $letter, then run install.bat again."
-        } else {
-            Pass "$free GB free on $letter"
-        }
+    $drive = [IO.Path]::GetPathRoot($root)
+    $free = [Math]::Floor((New-Object IO.DriveInfo $drive).AvailableFreeSpace / 1GB)
+    $letter = $drive.TrimEnd('\')
+    if ($free -lt $installGB) {
+        Fail "$free GB free on $letter, the install needs about $installGB GB there" "Free up space on $letter, then run install.bat again."
+    } else {
+        Pass "$free GB free on $letter"
     }
 }
 

@@ -2,16 +2,25 @@
 model_mirror.py
 ---------------
 Fetches the models a render needs from PyTTI Portable's mirror on Hugging Face
-before pytti loads them.
+before pytti loads them, and picks the folder each model loads from.
 
-Each file is saved where the library that uses it looks first (CLIP, AdaBins,
-torch.hub, pytti's VQGAN loader), so that library finds it and skips its own
-download. A file is moved into place only after its size and SHA-256 match.
-Anything that can't be fetched is left to the library, which downloads it from
-its original source as before.
+Models download to the pytti folder's cache/models, laid out like the user's .cache
+folder (clip, adabins, torch/hub, vqgan); the UI passes cache/ to renders as
+PYTTI_CACHE. A model that earlier versions downloaded to the .cache folder (or to
+torch.hub's folder) is loaded from there, and never downloaded again, moved or
+deleted, since other programs may use it too. Renders started without PYTTI_CACHE
+use the .cache folder, as pytti does.
 
-patch_gradio.py copies this file into pytti-core as pytti/model_mirror.py, and its
-workhorse.py patch calls prefetch_models() before CLIP is loaded.
+Each file is saved where the library that uses it looks (CLIP, AdaBins, torch.hub,
+pytti's VQGAN loader), so that library finds it and skips its own download. A file
+is moved into place only after its size and SHA-256 match. Anything that can't be
+fetched is left to the library, which downloads it from its original source to the
+same folder.
+
+patch_gradio.py copies this file into pytti-core as pytti/model_mirror.py. Its
+workhorse.py patch calls prefetch_models() before CLIP is loaded, and its patches
+load the models from the folders clip_folder(), adabins_folder(), hub_folder() and
+vqgan_folder() return.
 """
 import contextlib
 import hashlib
@@ -32,8 +41,14 @@ MIRROR = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/") + "
 # original sources instead of each waiting out the connection timeout
 _unreachable = False
 
+# The pytti folder's cache folder, and the models folder in it; None without PYTTI_CACHE
+CACHE = Path(os.environ["PYTTI_CACHE"]) if os.environ.get("PYTTI_CACHE") else None
+MODELS = CACHE / "models" if CACHE else None
+# Where earlier versions downloaded the models, as CLIP, AdaBins and pytti do by default
+USER_CACHE = Path.home() / ".cache"
+
 # Each file: (path in the mirror repo, SHA-256, size in bytes)
-CLIP_MODELS = {  # pytti setting -> file, saved as ~/.cache/clip/<file name>
+CLIP_MODELS = {  # pytti setting -> file, saved as clip/<file name>
     "ViTB32": (
         "clip/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt",
         "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
@@ -131,29 +146,90 @@ VQGAN_MODELS = {  # vqgan_model -> (config, checkpoint), saved as <name>.yaml an
 
 def prefetch_models(params):
     """Fetch the mirrored models this render needs that aren't on disk yet."""
-    cache = Path.home() / ".cache"
     for key, file in CLIP_MODELS.items():
         if params.get(key):
-            _fetch(file, cache / "clip" / Path(file[0]).name, exact=True)
+            name = Path(file[0]).name
+            _fetch(file, _clip_folder(name) / name, exact=True)
 
     # pytti loads AdaBins for 3D camera moves, and for depth stabilization when a camera
     # move or an init image gives it a frame to compare against
     mode = params.get("animation_mode")
     depth_weight = str(params.get("depth_stabilization_weight") or "").strip()
     if mode == "3D" or (depth_weight not in ("", "0") and (mode != "off" or params.get("init_image"))):
-        import torch
-
-        hub = Path(torch.hub.get_dir())
-        _fetch(ADABINS, cache / "adabins" / "AdaBins_nyu.pt", exact=True)
+        hub = hub_folder()
+        _fetch(ADABINS, adabins_folder() / "AdaBins_nyu.pt", exact=True)
         _fetch(EFFICIENTNET, hub / "checkpoints" / Path(EFFICIENTNET[0]).name, exact=True)
         _fetch_repo(GEN_EFFICIENTNET, hub / "rwightman_gen-efficientnet-pytorch_master")
 
     name = params.get("vqgan_model")
     if params.get("image_model") == "VQGAN" and name in VQGAN_MODELS:
-        folder = Path(params.get("models_parent_dir") or cache) / "vqgan"
+        folder = vqgan_folder(params)
         config, checkpoint = VQGAN_MODELS[name]
         _fetch(config, folder / f"{name}.yaml")
         _fetch(checkpoint, folder / f"{name}.ckpt")
+
+
+def _complete(path, size):
+    try:
+        return path.stat().st_size == size
+    except OSError:
+        return False
+
+
+def _folder(old, sub, file, size):
+    """The folder to load a model file of this size from: old, where earlier versions
+    downloaded it, if the whole file is there and not in MODELS/sub; else MODELS/sub,
+    where it is downloaded if missing. A cut-off file in old is left as it is."""
+    if MODELS is None:
+        return old
+    new = MODELS / sub
+    if _complete(old / file, size) and not _complete(new / file, size):
+        return old
+    return new
+
+
+_CLIP_SIZES = {Path(path).name: size for path, _, size in CLIP_MODELS.values()}
+
+
+def _clip_folder(file):
+    return _folder(USER_CACHE / "clip", "clip", file, _CLIP_SIZES[file])
+
+
+def clip_folder(name):
+    """download_root for clip.load(name), with one of CLIP's names such as ViT-B/32; None
+    (CLIP's default) for a name it doesn't list."""
+    from clip.clip import _MODELS
+
+    file = Path(_MODELS[name]).name if name in _MODELS else None
+    return _clip_folder(file) if file in _CLIP_SIZES else None
+
+
+def adabins_folder():
+    """The folder AdaBins loads AdaBins_nyu.pt from (pretrained_path_base)."""
+    return _folder(USER_CACHE / "adabins", "adabins", "AdaBins_nyu.pt", ADABINS[2])
+
+
+def hub_folder():
+    """torch.hub's folder for AdaBins' EfficientNet: its weights in checkpoints, and the
+    gen-efficientnet code next to them."""
+    # torch.hub's own folder (torch.hub.get_dir() before set_dir is called)
+    default = os.path.expanduser(
+        os.getenv("TORCH_HOME", os.path.join(os.getenv("XDG_CACHE_HOME", "~/.cache"), "torch"))
+    )
+    weights = "checkpoints/" + Path(EFFICIENTNET[0]).name
+    return _folder(Path(default) / "hub", "torch/hub", weights, EFFICIENTNET[2])
+
+
+def vqgan_folder(params):
+    """The folder pytti loads the VQGAN model from: models_parent_dir/vqgan, where with the
+    default models_parent_dir (${user_cache:}, the .cache folder) the model goes in
+    MODELS/vqgan unless earlier versions downloaded it to the .cache folder."""
+    name = params.get("vqgan_model")
+    default = USER_CACHE.resolve() / "vqgan"  # what ${user_cache:} gives
+    folder = Path(params.get("models_parent_dir") or default.parent) / "vqgan"
+    if name in VQGAN_MODELS and os.path.normcase(folder) == os.path.normcase(default):
+        return _folder(folder, "vqgan", f"{name}.ckpt", VQGAN_MODELS[name][1][2])
+    return folder  # a preset's own models_parent_dir, or a model pytti rejects
 
 
 def _size(n):

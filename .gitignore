@@ -1,6 +1,9 @@
 # Embedded Python runtime (~6.5 GB)
 python/
 
+# Downloads: pip's cache, models and Video Source conversions
+cache/
+
 # Outputs and render artifacts
 app/outputs/
 app/images_out/

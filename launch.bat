@@ -76,6 +76,19 @@ if errorlevel 1 (
     echo.
 )
 
+:: Windows 11's Smart App Control blocks unsigned files that have no cloud reputation, among
+:: them PyTorch's DLLs and most compiled Python modules. The system check warns about it
+:: before installing, but Windows can switch it on later from evaluation mode. 1 = on
+set "SAC="
+for /f "tokens=3" %%s in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy" /v VerifiedAndReputablePolicyState 2^>nul ^| findstr /i "VerifiedAndReputablePolicyState"') do set "SAC=%%s"
+if not "%SAC%"=="0x1" goto :start_ui
+echo  %YELLOW%Smart App Control is on. It can block files PyTTI needs, such as PyTorch's unsigned DLLs:%R%
+echo  %YELLOW%then PyTTI doesn't start, or renders fail with "WinError 4551".%R%
+echo  %DIM%To turn it off: Windows Security ^> App ^& browser control ^> Smart App Control settings ^> Off.%R%
+echo  %DIM%On many Windows versions it can't be turned back on without reinstalling Windows.%R%
+echo.
+
+:start_ui
 echo  %DIM%Starting...%R%
 echo.
 python\python.exe app\ui.py

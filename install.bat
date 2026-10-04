@@ -151,6 +151,16 @@ pause
 exit /b 1
 
 :checks_passed
+:: pip's download cache and all temp files go in cache\, so the install needs space only on
+:: the drive the pytti folder is on. Temp files left by an install that was closed partway
+:: are deleted first
+set "PIP_CACHE_DIR=%~dp0cache\pip"
+set "TMP=%~dp0cache\tmp"
+set "TEMP=%~dp0cache\tmp"
+if exist cache\tmp\ rmdir /s /q cache\tmp 2>nul
+if not exist cache\tmp\ mkdir cache\tmp
+if not exist cache\tmp\ goto :error
+
 :: An update keeps the Python and pip from steps 1-4
 if defined PYTTI_UPDATE goto :packages
 
@@ -282,6 +292,8 @@ if errorlevel 1 (
     echo %RED%  Could not write python\.install-complete.%R%
     goto :error
 )
+:: The temp folder is only needed while installing
+rmdir /s /q cache\tmp 2>nul
 call :ok
 
 :: ---------------------------------------------------------------------------

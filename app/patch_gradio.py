@@ -4,8 +4,9 @@ patch_gradio.py
 Patches to pytti-core that this UI relies on (breath mode, save_every=0,
 zero-padded frame names, Windows paths, Video Source and video mask conversion,
 Video Source end of video, prompt mask positions, output and backup folders,
-VQGAN downloads, audio input), plus model_mirror.py, which fetches models from
-PyTTI Portable's mirror on Hugging Face, and AdaBins' torch.hub branch.
+VQGAN downloads, audio input, the folders models load from), plus model_mirror.py,
+which fetches models from PyTTI Portable's mirror on Hugging Face and picks those
+folders, and AdaBins' torch.hub branch.
 
 Speed patches to pytti-core and kornia leave what a render computes unchanged and cut
 the time the CPU and GPU spend waiting for each other.
@@ -186,6 +187,15 @@ PYTTI_WORKHORSE_PATCHES = [
         '            logger.warning(f"Skipped the PyTTI model mirror: {e}")\n'
         '\n'
         '        # load CLIP\n',
+    ),
+    # VQGAN models load from the folder model_mirror.py picks: a preset's own
+    # models_parent_dir, or by default the pytti folder's cache/models, unless earlier
+    # versions downloaded the model to the .cache folder
+    (
+        '            model_artifacts_path = Path(params.models_parent_dir) / "vqgan"\n',
+        '            from pytti.model_mirror import vqgan_folder\n'
+        '\n'
+        '            model_artifacts_path = vqgan_folder(params)\n',
     ),
 ]
 
@@ -433,21 +443,70 @@ _GET_FRAMES_V1 = _GET_FRAMES_UPSTREAM.replace(
     '        subprocess.run(cmd, check=True)\n'
     '        os.replace(out_fname + ".part.mp4", out_fname)\n',
 )
+# The conversion as the previous version of this script patched it, with the copies in the
+# temp folder and never deleted; installs patched with it are upgraded in place
+_GET_FRAMES_V2 = (
+    '    in_fname = path\n'
+    '    # libx264 can\'t encode odd sizes as yuv420p: crop the odd last column/row\n'
+    '    vf = "crop=trunc(iw/2)*2:trunc(ih/2)*2"\n'
+    '    if params is not None:\n'
+    '        # https://trac.ffmpeg.org/wiki/ChangingFrameRate\n'
+    '        vf = f"fps={params.frames_per_second},{vf}"\n'
+    '    # https://trac.ffmpeg.org/wiki/Encode/H.264\n'
+    '    args = [\n'
+    '        "-filter:v", vf,\n'
+    '        "-c:v", "libx264",\n'
+    '        "-crf", "17",  # = effectively lossless\n'
+    '        "-preset", "veryfast",  # much faster than veryslow; the crf sets the quality\n'
+    '        "-tune", "fastdecode",\n'
+    '        "-pix_fmt", "yuv420p",  # may be necessary for "dumb players"\n'
+    '        "-an",  # pytti reads only the frames\n'
+    '    ]\n'
+    '    # The copy is named after the clip\'s path, size and modification time and the\n'
+    '    # settings above, so an edited clip or another fps is converted again\n'
+    '    stat = os.stat(in_fname)\n'
+    '    key = f"{os.path.normcase(os.path.abspath(in_fname))}|{stat.st_size}|{stat.st_mtime_ns}|{args}"\n'
+    '    cache = Path(tempfile.gettempdir()) / "pytti-video-cache"\n'
+    '    name = f"{Path(in_fname).stem[:40]}_{hashlib.sha256(key.encode()).hexdigest()[:16]}.mp4"\n'
+    '    out_fname = str(cache / name)\n'
+    '    if not path_exists(out_fname):\n'
+    '        logger.info(f"Converting {in_fname}...")\n'
+    '        cache.mkdir(parents=True, exist_ok=True)\n'
+    '        part_fname = out_fname + ".part.mp4"\n'
+    '        # ffmpeg on PATH (the UI puts the one it uses first), else imageio-ffmpeg\'s\n'
+    '        ffmpeg = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()\n'
+    '        cmd = [ffmpeg, "-nostats", "-loglevel", "error", "-y", "-i", in_fname, *args, part_fname]\n'
+    '        logger.debug(cmd)\n'
+    '        # No stdin, so a key pressed in the console can\'t end the conversion early\n'
+    '        try:\n'
+    '            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)\n'
+    '            os.replace(part_fname, out_fname)\n'
+    '        finally:\n'
+    '            if path_exists(part_fname):\n'
+    '                os.remove(part_fname)\n'
+    '        logger.debug(f"Converted {in_fname} to {out_fname}.")\n'
+)
 
 PYTTI_ROTOSCOPER_PATCHES = [
     (
-        ('import imageio, subprocess\n', 'import imageio, os, subprocess\n'),
-        'import hashlib, imageio, imageio_ffmpeg, os, shutil, subprocess, tempfile\n'
+        (
+            'import imageio, subprocess\n',
+            'import imageio, os, subprocess\n',
+            'import hashlib, imageio, imageio_ffmpeg, os, shutil, subprocess, tempfile\n'
+            'from pathlib import Path\n',
+        ),
+        'import contextlib, hashlib, imageio, imageio_ffmpeg, os, shutil, subprocess, tempfile, time\n'
         'from pathlib import Path\n',
     ),
     # Video Source clips and video masks are converted before pytti reads them. Upstream
     # wrote the copy next to the clip (failing in a read-only folder) and reused it even
     # after the fps changed, copied the audio (which fails for Opus or PCM), failed on odd
     # sizes and used x264's slowest preset. Convert without audio, cropped to even sizes,
-    # faster, into a per-user cache named after the clip and the settings, and publish
-    # the copy only if ffmpeg succeeds, so a failed or interrupted conversion is never reused.
+    # faster, into a cache in the pytti folder named after the clip and the settings, and
+    # publish the copy only if ffmpeg succeeds, so a failed or interrupted conversion is
+    # never reused. Copies not used for 30 days are deleted.
     (
-        (_GET_FRAMES_UPSTREAM, _GET_FRAMES_V1),
+        (_GET_FRAMES_UPSTREAM, _GET_FRAMES_V1, _GET_FRAMES_V2),
         '    in_fname = path\n'
         '    # libx264 can\'t encode odd sizes as yuv420p: crop the odd last column/row\n'
         '    vf = "crop=trunc(iw/2)*2:trunc(ih/2)*2"\n'
@@ -468,9 +527,22 @@ PYTTI_ROTOSCOPER_PATCHES = [
         '    # settings above, so an edited clip or another fps is converted again\n'
         '    stat = os.stat(in_fname)\n'
         '    key = f"{os.path.normcase(os.path.abspath(in_fname))}|{stat.st_size}|{stat.st_mtime_ns}|{args}"\n'
-        '    cache = Path(tempfile.gettempdir()) / "pytti-video-cache"\n'
+        '    # In the pytti folder\'s cache/video (the UI passes renders cache/ as PYTTI_CACHE),\n'
+        '    # else in the temp folder\n'
+        '    if os.environ.get("PYTTI_CACHE"):\n'
+        '        cache = Path(os.environ["PYTTI_CACHE"]) / "video"\n'
+        '    else:\n'
+        '        cache = Path(tempfile.gettempdir()) / "pytti-video-cache"\n'
         '    name = f"{Path(in_fname).stem[:40]}_{hashlib.sha256(key.encode()).hexdigest()[:16]}.mp4"\n'
         '    out_fname = str(cache / name)\n'
+        '    # A copy\'s modification time is when it was last used. Copies unused for 30 days are\n'
+        '    # deleted, and so are files an interrupted conversion left behind.\n'
+        '    with contextlib.suppress(OSError):\n'
+        '        os.utime(out_fname)\n'
+        '    for old in cache.glob("*"):\n'
+        '        with contextlib.suppress(OSError):  # in use, or deleted meanwhile\n'
+        '            if time.time() - old.stat().st_mtime > 30 * 24 * 3600:\n'
+        '                old.unlink()\n'
         '    if not path_exists(out_fname):\n'
         '        logger.info(f"Converting {in_fname}...")\n'
         '        cache.mkdir(parents=True, exist_ok=True)\n'
@@ -819,6 +891,38 @@ ADABINS_UNET_PATCHES = [
     ),
 ]
 
+# ── pytti-core patches: model folders ──────────────────────────────────────
+# Models load from the folders model_mirror.py picks: the pytti folder's cache/models, which
+# the UI passes to renders, or the user's .cache folder for a model earlier versions
+# downloaded there. VQGAN's folder is patched in workhorse.py.
+
+PYTTI_PERCEPTOR = SITE_PACKAGES / "pytti" / "Perceptor" / "__init__.py"
+
+PYTTI_PERCEPTOR_PATCHES = [
+    (
+        '        CLIP_PERCEPTORS = [\n'
+        '            clip.load(model, jit=False)[0]\n',
+        '        from pytti.model_mirror import clip_folder\n'
+        '\n'
+        '        CLIP_PERCEPTORS = [\n'
+        '            clip.load(model, jit=False, download_root=clip_folder(model))[0]\n',
+    ),
+]
+
+# DepthLossClass.py's speed patch is further down
+PYTTI_DEPTHLOSS_FOLDER_PATCHES = [
+    # AdaBins builds on an EfficientNet that it loads through torch.hub
+    (
+        '            infer_helper = InferenceHelper(dataset="nyu", device=device)\n',
+        '            from pytti.model_mirror import adabins_folder, hub_folder\n'
+        '\n'
+        '            torch.hub.set_dir(hub_folder())\n'
+        '            infer_helper = InferenceHelper(\n'
+        '                pretrained_path_base=str(adabins_folder()), dataset="nyu", device=device\n'
+        '            )\n',
+    ),
+]
+
 # ── Speed patches: pytti-core ───────────────────────────────────────────────
 # None of these change what a render computes: the same values (or, for the palette
 # gradient, the same sums in a different order), with fewer waits between CPU and GPU.
@@ -1091,7 +1195,8 @@ KORNIA_AUG_2D_BASE_PATCHES = [
 # ── Files added to pytti-core ───────────────────────────────────────────────
 
 # (source next to this script, destination in pytti-core, label); copied whenever the
-# destination is missing or differs, so `git pull` updates them too
+# destination is missing or differs, so `git pull` updates them too. The model folder
+# patches import model_mirror.py, so a missing source is an error.
 ADDED_FILES = [
     (
         pathlib.Path(__file__).parent / "model_mirror.py",
@@ -1112,11 +1217,12 @@ TARGETS = [
     (PYTTI_AUDIOPARSE, PYTTI_AUDIOPARSE_PATCHES, "AudioParse.py"),
     (PYTTI_VQGAN, PYTTI_VQGAN_PATCHES, "vqgan.py"),
     (ADABINS_UNET, ADABINS_UNET_PATCHES, "unet_adaptive_bins.py"),
+    (PYTTI_PERCEPTOR, PYTTI_PERCEPTOR_PATCHES, "Perceptor/__init__.py"),
     (PYTTI_PIXEL, PYTTI_PIXEL_PATCHES, "pixel.py"),
     (PYTTI_SAMPLERS, PYTTI_SAMPLERS_PATCHES, "samplers.py"),
     (PYTTI_EMBEDDER, PYTTI_EMBEDDER_PATCHES, "Embedder.py"),
     (PYTTI_BASELOSS, PYTTI_BASELOSS_PATCHES, "BaseLossClass.py"),
-    (PYTTI_DEPTHLOSS, PYTTI_DEPTHLOSS_PATCHES, "DepthLossClass.py"),
+    (PYTTI_DEPTHLOSS, PYTTI_DEPTHLOSS_FOLDER_PATCHES + PYTTI_DEPTHLOSS_PATCHES, "DepthLossClass.py"),
 ]
 
 # Speed-only patches outside pytti-core: a file that doesn't match is left as it is,
@@ -1174,10 +1280,6 @@ def main():
             elif text is not None:
                 planned.append((target, text, label))
         for source, target, label in ADDED_FILES:
-            if not source.exists():
-                # Nothing depends on it: workhorse.py's call to it is wrapped in try/except
-                print(f"  WARNING: {source} is missing, so {label} was not added to pytti-core.")
-                continue
             text = source.read_text(encoding="utf-8")
             try:
                 current = target.read_text(encoding="utf-8")

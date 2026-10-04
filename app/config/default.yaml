@@ -148,6 +148,9 @@ use_tensorboard: false
 ### Model I/O ###
 #################
 
+# VQGAN models load from <models_parent_dir>/vqgan. With ${user_cache:} they download to the
+# pytti folder's cache/models/vqgan; models earlier versions put in %USERPROFILE%\.cache\vqgan
+# are used from there
 models_parent_dir: ${user_cache:}
 
 ##########################

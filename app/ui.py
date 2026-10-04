@@ -324,6 +324,9 @@ OUTPUTS_DIR = ROOT / "outputs"     # Hydra date hierarchy: outputs/YYYY-MM-DD/HH
 # The embedded Python is two levels up from app/ (portable/python/python.exe)
 PORTABLE_ROOT = ROOT.parent
 EMBEDDED_PYTHON = PORTABLE_ROOT / "python" / "python.exe"
+# Models and Video Source conversions (cache/models, cache/video); install.bat keeps pip's
+# downloads here too
+CACHE_DIR = PORTABLE_ROOT / "cache"
 # Fallback: system Python (for dev use)
 PYTHON_EXE = EMBEDDED_PYTHON if EMBEDDED_PYTHON.exists() else Path(sys.executable)
 
@@ -794,6 +797,8 @@ def start_render(conf_name: str):
         # told to; earlier torch versions ignore the variable.
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "LOGURU_LEVEL": "INFO",
                "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
+        # Where model_mirror.py and the rotoscoper.py patch put models and Video Source conversions
+        env["PYTTI_CACHE"] = str(CACHE_DIR)
         # pytti runs a bare "ffmpeg" (Video Source conversion, audio); make it the one the UI uses
         ffmpeg = _ffmpeg_exe()
         ffmpeg_dir = _ffmpeg_folder(ffmpeg) if ffmpeg else None

@@ -39,7 +39,7 @@ PyTTI Portable is a self-contained distributable of [pytti-core](https://github.
 - NVIDIA driver 528.33 or newer (570.65 or newer recommended)
 - [Git](https://git-scm.com), only to install with `git clone` and update with `git pull`
 - [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) (x64)
-- About 17 GB of free disk space to install. Afterwards the `python` folder takes about 6.5 GB, and pip's download cache and the models take more (see [Disk space](#disk-space))
+- About 17 GB of free disk space on the drive the pytti folder is on, which doesn't have to be C:. Afterwards the `python` folder takes about 6.5 GB, and pip's download cache and the models take more, all inside the pytti folder (see [Disk space](#disk-space))
 - 8 GB or more of RAM recommended
 
 `install.bat` checks all of these before downloading anything and tells you what to fix.
@@ -65,15 +65,27 @@ The first render downloads the CLIP and depth models, about 2 GB with the defaul
 
 ## Disk space
 
-- **The `python` folder** takes about 6.5 GB.
-- **pip's download cache** is in `%LOCALAPPDATA%\pip\cache`, with about 3.3 GB for the PyTorch wheel. Updates and reinstalls reuse it. To clear it, run `python\python.exe -m pip cache purge` from the pytti folder. That empties the cache every Python on the PC shares, not only PyTTI's part.
-- **Models** are downloaded on first use to `%USERPROFILE%\.cache`:
+Everything PyTTI downloads stays in the pytti folder, so it needs space only on the drive the folder is on, and deleting the folder removes all of it.
+
+- **`python`**: the embedded Python and its packages, about 6.5 GB.
+- **`cache\pip`**: pip's download cache, with about 3.3 GB for the PyTorch wheel. Updates and reinstalls reuse it. Delete the folder to get the space back. While `install.bat` runs, pip's temporary files are in `cache\tmp`.
+- **`cache\models`**: models, downloaded on first use:
   - `clip`: CLIP models, about 1.1 GB for the three that are on by default
   - `adabins`: the depth model for 3D mode, about 0.9 GB
   - `torch\hub`: a 120 MB model the depth model builds on
   - `vqgan`: VQGAN models, from 0.3 GB (coco) to 4.3 GB (sflckr) each
+- **`cache\video`**: Video Source clips and video masks converted for pytti, one copy per clip and frame rate. Copies that no render has used for 30 days are deleted the next time a render reads a video.
 
-Deleting the pytti folder leaves the cache and the models in place. To remove them too, delete those folders. Other programs that use CLIP or PyTorch may keep files in `clip` and `torch\hub` as well.
+Earlier versions downloaded the models to `%USERPROFILE%\.cache` instead, usually on C:. PyTTI still uses the models it finds there, so they aren't downloaded again, and it never moves or deletes them, since other programs that use CLIP or PyTorch may share the `clip` and `torch\hub` folders. To keep them in the pytti folder instead, for example to free up C: when the pytti folder is on another drive, close PyTTI and move the files from each of these folders to the folder of the same name in `cache\models` in the pytti folder, creating it if needed:
+
+| From `%USERPROFILE%\.cache\` | To `cache\models\` in the pytti folder |
+| --- | --- |
+| `clip` | `clip` |
+| `adabins` | `adabins` |
+| `torch\hub` (`checkpoints\tf_efficientnet_b5_ap-9e82fae8.pth` and the `rwightman_gen-efficientnet-pytorch_master` folder) | `torch\hub` |
+| `vqgan` | `vqgan` |
+
+Leave files that other programs use where they are, or those programs download them again. Earlier versions also kept pip's download cache in `%LOCALAPPDATA%\pip\cache`, which every Python on the PC shares: `python\python.exe -m pip cache purge`, run from the pytti folder, empties it, including what other programs put there. Video Source conversions from earlier versions are in `%TEMP%\pytti-video-cache`, which can be deleted.
 
 ## Project Structure
 
@@ -84,6 +96,7 @@ pytti/
 ├── PROMPTING.md         # Prompt and preset format reference
 ├── CHANGELOG.md         # What changed in each version
 ├── python/              # Embedded Python and all packages (created by install.bat)
+├── cache/               # pip's download cache, models and Video Source conversions (see Disk space)
 ├── app/
 │   ├── ui.py            # Gradio web UI
 │   ├── patch_gradio.py  # pytti-core patches (applied on install and every launch)
@@ -115,7 +128,7 @@ PyTTI uses CLIP to guide an image generator (Limited Palette, Unlimited Palette 
 - **Start Render says a setting could run code on this PC**: pytti runs the expressions in weights and camera moves as Python code, and Hydra runs what a preset's `hydra:` section names, so a preset can do anything your Windows account can. Only render presets from people you trust. PyTTI checks a preset when you load it and before it renders: expressions may use numbers, arithmetic, `t`, math functions such as `sin()` and audio variables ([PROMPTING.md](PROMPTING.md#weights-that-change-over-time) lists them), and Start Render refuses a preset with a `hydra:` or `defaults:` section, or with `${...}` in a prompt, weight or camera move. Fix the setting the message names, or delete the section from the preset's file in `app/config/conf`.
 - **The UI doesn't open, and the `launch.bat` window says `When localhost is not accessible, a shareable link must be created`**: something on this PC kept PyTTI from reaching its own page at 127.0.0.1, such as a firewall, antivirus or VPN program that blocks local connections. Proxies are already bypassed for that address. Don't set `share=True` as the message suggests: that puts the UI on a public link, where anyone who has it can start renders, and renders can run code.
 - **The install stopped partway**: run `install.bat` again. It offers to resume, or to delete the `python` folder and start over.
-- **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models, which are stored outside the pytti folder (see [Disk space](#disk-space)).
+- **Starting over**: delete the `python` folder and run `install.bat` again. Your presets and renders in `app` are kept, and so are pip's download cache and the models in `cache` (see [Disk space](#disk-space)).
 
 ## Tests
 
