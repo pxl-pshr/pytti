@@ -1,7 +1,10 @@
 # What the tests need, at the versions in app/constraints.txt (no PyTorch, no GPU):
 #   python -m pip install -c app/constraints.txt -r tests/requirements.txt
 # gradio: app/ui.py imports it. PyYAML: app/presets.py and app/render.py. loguru: app/model_mirror.py.
+# ftfy and regex: CLIP's tokenizer, for the prompt length check.
 gradio
 PyYAML
 loguru
+ftfy
+regex
 pytest==9.1.1
