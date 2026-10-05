@@ -152,10 +152,11 @@ VIDEO = {"animation_mode": "Video Source", "video_path": "clip.mp4", "frames_per
 @pytest.fixture
 def preflight(monkeypatch):
     """render.preflight on default.yaml's settings with others over them: (warnings, summary).
-    The media are made up, nothing needs downloading, and the disk has room."""
+    The media are made up, nothing needs downloading, and the disk and the GPU have room."""
     monkeypatch.setattr(render, "_probe", lambda path: MEDIA.get(path))
     monkeypatch.setattr(render, "_downloads", lambda conf: [])
     monkeypatch.setattr(render, "_drive", lambda path: ("C:\\", 10**15))
+    monkeypatch.setattr(render, "_largest_gpu_gb", lambda: 31.8)
     return lambda **settings: render.preflight({**presets.load_defaults(), **settings})
 
 
@@ -198,3 +199,41 @@ def test_a_full_disk(preflight, monkeypatch):
     monkeypatch.setattr(render, "_drive", lambda path: ("C:\\", 1000))
     warnings, summary = preflight(animation_mode="2D", steps_per_scene=1000, scenes="a")
     assert any(line.startswith("The render needs about ") and "which has only 1 KB free" in line for line in warnings)
+
+
+@pytest.mark.parametrize("gpu_gb, accumulation, warned", [
+    pytest.param(15.99, 1, True, id="1 on a 16 GB GPU"),
+    pytest.param(19.99, 1, True, id="1 on a 20 GB GPU"),
+    pytest.param(23.99, 1, False, id="1 on a 24 GB GPU"),
+    pytest.param(15.99, 2, False, id="2 on a 16 GB GPU"),
+    pytest.param(None, 1, False, id="GPU memory unknown"),
+])
+def test_gradient_accumulation_on_a_small_gpu(preflight, monkeypatch, gpu_gb, accumulation, warned):
+    """1 needs about 17 GB with the default settings, 2 about 9 GB, with the same result."""
+    monkeypatch.setattr(render, "_largest_gpu_gb", lambda: gpu_gb)
+    warnings, _ = preflight(gradient_accumulation_steps=accumulation, animation_mode="2D", steps_per_scene=100, scenes="a")
+    found = [line for line in warnings if line.startswith("Gradient Accumulation Steps is 1")]
+    assert bool(found) == warned
+    if warned:
+        assert f"this PC's GPU has {gpu_gb:.0f} GB" in found[0] and "set it to 2" in found[0]
+
+
+@pytest.mark.parametrize("stdout, returncode, gb", [
+    pytest.param("16376\n", 0, 15.99, id="one GPU"),
+    pytest.param("8192\n24564\n", 0, 23.99, id="the larger of two"),
+    pytest.param("[N/A]\n", 0, None, id="no size"),
+    pytest.param("", 9, None, id="nvidia-smi fails"),
+])
+def test_gpu_memory_from_nvidia_smi(monkeypatch, stdout, returncode, gb):
+    monkeypatch.setattr(render, "_gpu_gb", None)
+    monkeypatch.setattr(render.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=stdout, returncode=returncode))
+    found = render._largest_gpu_gb()
+    assert found is None if gb is None else found == pytest.approx(gb, abs=0.01)
+
+
+def test_no_nvidia_smi(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("nvidia-smi")
+    monkeypatch.setattr(render, "_gpu_gb", None)
+    monkeypatch.setattr(render.subprocess, "run", missing)
+    assert render._largest_gpu_gb() is None

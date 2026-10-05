@@ -591,6 +591,11 @@ def resume_render(run_dir: Path, labels: dict) -> str:
 # Bytes per pixel of a saved PNG frame: 0.58 to 0.66 of the 3 bytes of RGB in past renders
 _PNG_BYTES_PER_PIXEL = 3 * 0.65
 _mirror = None  # app/model_mirror.py once loaded; False if it can't be
+# GPU memory in GB a render with the default settings needs at Gradient Accumulation Steps
+# 1 and at 2, and the GPU size below which 1 may not fit (24 GB cards report a bit less)
+_GAS_1_GB, _GAS_2_GB = 17, 9
+_GAS_1_MIN_GPU_GB = 23
+_gpu_gb = None  # memory of the largest GPU in GB once read; False if it can't be
 
 
 def _model_mirror():
@@ -725,13 +730,36 @@ def _drive(path: Path) -> tuple[str, int] | None:
     return None
 
 
+def _largest_gpu_gb() -> float | None:
+    """Memory of this PC's largest NVIDIA GPU in GB, from nvidia-smi; None if it can't be read.
+
+    Read once. The UI doesn't import torch, which would load CUDA into this process.
+    """
+    global _gpu_gb
+    if _gpu_gb is None:
+        _gpu_gb = False
+        # Where drivers from before 2019 put nvidia-smi, as in system_check.ps1
+        smi = shutil.which("nvidia-smi") or os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "NVIDIA Corporation", "NVSMI", "nvidia-smi.exe")
+        try:
+            result = subprocess.run([smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                                    capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result and result.returncode == 0:
+            sizes = [float(mib) for mib in re.findall(r"^\s*(\d+(?:\.\d+)?)\s*$", result.stdout, re.MULTILINE)]
+            if sizes:
+                _gpu_gb = max(sizes) / 1024
+    return _gpu_gb or None
+
+
 def preflight(conf: dict) -> tuple[list[str], list[str]]:
     """What a render with these settings (default.yaml's with the preset's over them) will
     produce and need, as (warnings, summary lines) for the status box and the log.
 
     Warnings are for what may waste the render: a Video Source clip or an audio track it
-    doesn't fit, a clip stretched to another shape, too little disk space. All figures are
-    estimates, so nothing is reported if working them out fails.
+    doesn't fit, a clip stretched to another shape, too little disk space or GPU memory.
+    All figures are estimates, so nothing is reported if working them out fails.
     """
     try:
         return _preflight(conf)
@@ -812,6 +840,12 @@ def _preflight(conf: dict) -> tuple[list[str], list[str]]:
         summary.append(f"Disk: about {_size_text(size)} on {drive}, which has {_size_text(free)} free.")
         if size > free:
             warnings.append(f"The render needs about {_size_text(size)} on {drive}, which has only {_size_text(free)} free.")
+
+    # 1 needs about twice the GPU memory of 2, for the same result
+    if int(_num(conf.get("gradient_accumulation_steps"), 1)) == 1 and (gpu := _largest_gpu_gb()) and gpu < _GAS_1_MIN_GPU_GB:
+        warnings.append(f"Gradient Accumulation Steps is 1, which needs about {_GAS_1_GB} GB of GPU memory with the default "
+                        f"settings, and this PC's GPU has {gpu:.0f} GB. If the render runs out of memory or slows down, "
+                        f"set it to 2, which gives the same result with about {_GAS_2_GB} GB.")
     return warnings, summary
 
 
